@@ -9,8 +9,8 @@ project "MeshOptimizer"
 	inlining "Auto"
 
 	files {
-		"./**.h",
-		"./**.cpp"
+		"./src/**.h",
+		"./src/**.cpp"
 	}
 
  	filter "configurations:Debug"
