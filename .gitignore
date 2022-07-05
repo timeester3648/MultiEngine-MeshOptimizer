@@ -1,3 +1,9 @@
 /build/
 /data/
 /gltf/library.wasm
+
+# exclude project files
+**.sln
+**.vcxproj
+**.vcxproj.user
+**.vcxproj.filters
