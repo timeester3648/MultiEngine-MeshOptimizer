@@ -1,6 +1,6 @@
 {
 	"name": "meshoptimizer",
-	"version": "0.17.0",
+	"version": "0.18.1",
 	"description": "Mesh optimizaiton library that makes meshes smaller and faster to render",
 	"author": "Arseny Kapoulkine",
 	"license": "MIT",
@@ -21,7 +21,7 @@
 	"module": "index.module.js",
 	"types": "index.module.d.ts",
 	"scripts": {
-		"test": "node meshopt_encoder.test.js && node meshopt_decoder.test.js",
+		"test": "node meshopt_encoder.test.js && node meshopt_decoder.test.js && node meshopt_simplifier.test.js",
 		"prepublishOnly": "npm test"
 	}
 }

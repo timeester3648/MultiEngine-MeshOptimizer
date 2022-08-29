@@ -1,7 +1,7 @@
 /**
- * gltfpack - version 0.17
+ * gltfpack - version 0.18
  *
- * Copyright (C) 2016-2021, by Arseny Kapoulkine (arseny.kapoulkine@gmail.com)
+ * Copyright (C) 2016-2022, by Arseny Kapoulkine (arseny.kapoulkine@gmail.com)
  * Report bugs and download new versions at https://github.com/zeux/meshoptimizer
  *
  * This application is distributed under the MIT License. See notice at the end of this file.
@@ -94,12 +94,22 @@ enum TextureKind
 	TextureKind__Count
 };
 
+enum TextureMode
+{
+	TextureMode_Raw,
+	TextureMode_ETC1S,
+	TextureMode_UASTC,
+};
+
 struct Settings
 {
 	int pos_bits;
 	int tex_bits;
 	int nrm_bits;
 	int col_bits;
+
+	bool pos_normalized;
+	bool pos_float;
 
 	int trn_bits;
 	int rot_bits;
@@ -129,7 +139,7 @@ struct Settings
 	float texture_scale;
 	int texture_limit;
 
-	bool texture_uastc[TextureKind__Count];
+	TextureMode texture_mode[TextureKind__Count];
 	int texture_quality[TextureKind__Count];
 
 	int texture_jobs;
@@ -148,6 +158,7 @@ struct QuantizationPosition
 	float offset[3];
 	float scale;
 	int bits;
+	bool normalized;
 };
 
 struct QuantizationTexture
@@ -155,6 +166,7 @@ struct QuantizationTexture
 	float offset[2];
 	float scale[2];
 	int bits;
+	bool normalized;
 };
 
 struct StreamFormat
@@ -184,7 +196,12 @@ struct NodeInfo
 	unsigned int animated_paths;
 
 	int remap;
-	std::vector<size_t> meshes;
+
+	std::vector<size_t> mesh_nodes;
+
+	bool has_mesh;
+	size_t mesh_index;
+	cgltf_skin* mesh_skin;
 };
 
 struct MaterialInfo
@@ -253,8 +270,11 @@ struct TempFile
 	std::string path;
 	int fd;
 
+	TempFile();
 	TempFile(const char* suffix);
 	~TempFile();
+
+	void create(const char* suffix);
 };
 
 std::string getFullPath(const char* path, const char* base_path);
@@ -282,7 +302,7 @@ void mergeMeshes(std::vector<Mesh>& meshes, const Settings& settings);
 void filterEmptyMeshes(std::vector<Mesh>& meshes);
 void filterStreams(Mesh& mesh, const MaterialInfo& mi);
 
-void mergeMeshMaterials(cgltf_data* data, std::vector<Mesh>& meshes, const Settings& settings);
+void mergeMeshMaterials(cgltf_data* data, const std::string& extras, std::vector<Mesh>& meshes, const Settings& settings);
 void markNeededMaterials(cgltf_data* data, std::vector<MaterialInfo>& materials, const std::vector<Mesh>& meshes, const Settings& settings);
 
 bool hasValidTransform(const cgltf_texture_view& view);
@@ -297,8 +317,6 @@ void adjustDimensions(int& width, int& height, const Settings& settings);
 const char* mimeExtension(const char* mime_type);
 
 #ifdef WITH_BASISU
-void encodeInit(int jobs);
-bool encodeBasis(const std::string& data, const char* mime_type, std::string& result, const ImageInfo& info, const Settings& settings);
 void encodeImages(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings);
 #endif
 
@@ -310,7 +328,7 @@ void decomposeTransform(float translation[3], float rotation[4], float scale[3],
 
 QuantizationPosition prepareQuantizationPosition(const std::vector<Mesh>& meshes, const Settings& settings);
 void prepareQuantizationTexture(cgltf_data* data, std::vector<QuantizationTexture>& result, std::vector<size_t>& indices, const std::vector<Mesh>& meshes, const Settings& settings);
-void getPositionBounds(float min[3], float max[3], const Stream& stream, const QuantizationPosition* qp);
+void getPositionBounds(float min[3], float max[3], const Stream& stream, const QuantizationPosition& qp, const Settings& settings);
 
 StreamFormat writeVertexStream(std::string& bin, const Stream& stream, const QuantizationPosition& qp, const QuantizationTexture& qt, const Settings& settings);
 StreamFormat writeIndexStream(std::string& bin, const std::vector<unsigned int>& stream);
@@ -338,7 +356,7 @@ void writeBufferView(std::string& json, BufferView::Kind kind, StreamFormat::Fil
 void writeSampler(std::string& json, const cgltf_sampler& sampler);
 void writeImage(std::string& json, std::vector<BufferView>& views, const cgltf_image& image, const ImageInfo& info, size_t index, const char* input_path, const Settings& settings);
 void writeEncodedImage(std::string& json, std::vector<BufferView>& views, const cgltf_image& image, const std::string& encoded, const ImageInfo& info, const char* output_path, const Settings& settings);
-void writeTexture(std::string& json, const cgltf_texture& texture, cgltf_data* data, const Settings& settings);
+void writeTexture(std::string& json, const cgltf_texture& texture, const ImageInfo* info, cgltf_data* data, const Settings& settings);
 void writeMeshAttributes(std::string& json, std::vector<BufferView>& views, std::string& json_accessors, size_t& accr_offset, const Mesh& mesh, int target, const QuantizationPosition& qp, const QuantizationTexture& qt, const Settings& settings);
 size_t writeMeshIndices(std::vector<BufferView>& views, std::string& json_accessors, size_t& accr_offset, const Mesh& mesh, const Settings& settings);
 size_t writeJointBindMatrices(std::vector<BufferView>& views, std::string& json_accessors, size_t& accr_offset, const cgltf_skin& skin, const QuantizationPosition& qp, const Settings& settings);
@@ -356,7 +374,7 @@ void writeExtras(std::string& json, const std::string& data, const cgltf_extras&
 void writeScene(std::string& json, const cgltf_scene& scene, const std::string& roots);
 
 /**
- * Copyright (c) 2016-2021 Arseny Kapoulkine
+ * Copyright (c) 2016-2022 Arseny Kapoulkine
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation

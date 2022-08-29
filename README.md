@@ -13,10 +13,10 @@ The library provides a C and C++ interface for all algorithms; you can use it fr
 meshoptimizer is hosted on GitHub; you can download the latest release using git:
 
 ```
-git clone -b v0.17 https://github.com/zeux/meshoptimizer.git
+git clone -b v0.18 https://github.com/zeux/meshoptimizer.git
 ```
 
-Alternatively you can [download the .zip archive from GitHub](https://github.com/zeux/meshoptimizer/archive/v0.15.zip).
+Alternatively you can [download the .zip archive from GitHub](https://github.com/zeux/meshoptimizer/archive/v0.18.zip).
 
 The library is also available as a package ([ArchLinux](https://aur.archlinux.org/packages/meshoptimizer/), [Debian](https://packages.debian.org/libmeshoptimizer), [Ubuntu](https://packages.ubuntu.com/libmeshoptimizer), [Vcpkg](https://github.com/microsoft/vcpkg/tree/master/ports/meshoptimizer)).
 
@@ -24,13 +24,7 @@ The library is also available as a package ([ArchLinux](https://aur.archlinux.or
 
 `gltfpack` is a CLI tool for optimizing meshes using meshoptimizer.
 
-You can download a pre-built binary for gltfpack on [Releases page](https://github.com/zeux/meshoptimizer/releases), or install [npm package](https://www.npmjs.com/package/gltfpack) as follows:
-
-```
-npm install -g gltfpack
-```
-
-You can also find prebuilt binaries of `gltfpack` built from master on [Actions page](https://github.com/zeux/meshoptimizer/actions).
+You can download a pre-built binary for gltfpack on [Releases page](https://github.com/zeux/meshoptimizer/releases), or install [npm package](https://www.npmjs.com/package/gltfpack). Native binaries are recommended over npm since they can work with larger files, run faster, and support texture compression.
 
 [Learn more about gltfpack](./gltf/README.md)
 

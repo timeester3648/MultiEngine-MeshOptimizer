@@ -11,9 +11,32 @@
 #include <unistd.h>
 #endif
 
+TempFile::TempFile()
+	: fd(-1)
+{
+}
+
 TempFile::TempFile(const char* suffix)
     : fd(-1)
 {
+	create(suffix);
+}
+
+TempFile::~TempFile()
+{
+	if (!path.empty())
+		remove(path.c_str());
+
+#ifndef _WIN32
+	if (fd >= 0)
+		close(fd);
+#endif
+}
+
+void TempFile::create(const char* suffix)
+{
+	assert(fd < 0 && path.empty());
+
 #if defined(_WIN32)
 	const char* temp_dir = getenv("TEMP");
 	path = temp_dir ? temp_dir : ".";
@@ -23,7 +46,7 @@ TempFile::TempFile(const char* suffix)
 #elif defined(__wasi__)
 	static int id = 0;
 	char ids[16];
-	sprintf(ids, "%d", id++);
+	snprintf(ids, sizeof(ids), "%d", id++);
 
 	path = "gltfpack-temp-";
 	path += ids;
@@ -32,15 +55,6 @@ TempFile::TempFile(const char* suffix)
 	path = "/tmp/gltfpack-XXXXXX";
 	path += suffix;
 	fd = mkstemps(&path[0], strlen(suffix));
-#endif
-}
-
-TempFile::~TempFile()
-{
-	remove(path.c_str());
-
-#ifndef _WIN32
-	close(fd);
 #endif
 }
 

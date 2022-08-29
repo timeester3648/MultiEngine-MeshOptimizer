@@ -18,7 +18,7 @@
 std::string getVersion()
 {
 	char result[32];
-	sprintf(result, "%d.%d", MESHOPTIMIZER_VERSION / 1000, (MESHOPTIMIZER_VERSION % 1000) / 10);
+	snprintf(result, sizeof(result), "%d.%d", MESHOPTIMIZER_VERSION / 1000, (MESHOPTIMIZER_VERSION % 1000) / 10);
 	return result;
 }
 
@@ -356,7 +356,7 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 		filterStreams(mesh, mi);
 	}
 
-	mergeMeshMaterials(data, meshes, settings);
+	mergeMeshMaterials(data, extras, meshes, settings);
 	mergeMeshes(meshes, settings);
 	filterEmptyMeshes(meshes);
 
@@ -470,10 +470,10 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 
 		comma(json_images);
 		append(json_images, "{");
-		if (encoded_images.size())
+		if (encoded_images.size() && !encoded_images[i].empty())
 		{
-			if (encoded_images[i].empty())
-				fprintf(stderr, "Warning: unable to encode image %d (%s), skipping\n", int(i), image.uri ? image.uri : "?");
+			if (encoded_images[i].compare(0, 5, "error") == 0)
+				fprintf(stderr, "Warning: unable to encode image %d (%s), skipping (%s)\n", int(i), image.uri ? image.uri : "?", encoded_images[i].c_str());
 			else
 				writeEncodedImage(json_images, views, image, encoded_images[i], images[i], output_path, settings);
 
@@ -492,7 +492,7 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 
 		comma(json_textures);
 		append(json_textures, "{");
-		writeTexture(json_textures, texture, data, settings);
+		writeTexture(json_textures, texture, texture.image ? &images[texture.image - data->images] : NULL, data, settings);
 		append(json_textures, "}");
 	}
 
@@ -507,7 +507,7 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 
 		comma(json_materials);
 		append(json_materials, "{");
-		writeMaterial(json_materials, data, material, settings.quantize ? &qp : NULL, settings.quantize ? &qt_materials[i] : NULL);
+		writeMaterial(json_materials, data, material, settings.quantize && !settings.pos_float ? &qp : NULL, settings.quantize ? &qt_materials[i] : NULL);
 		if (settings.keep_extras)
 			writeExtras(json_materials, extras, material.extras);
 		append(json_materials, "}");
@@ -653,13 +653,23 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 			for (size_t j = 0; j < mesh.nodes.size(); ++j)
 			{
 				NodeInfo& ni = nodes[mesh.nodes[j] - data->nodes];
-
 				assert(ni.keep);
-				ni.meshes.push_back(node_offset);
 
-				writeMeshNode(json_nodes, mesh_offset, mesh.nodes[j], mesh.skin, data, settings.quantize ? &qp : NULL);
+				// if we don't use position quantization, prefer attaching the mesh to its node directly
+				if (!ni.has_mesh && (!settings.quantize || settings.pos_float))
+				{
+					ni.has_mesh = true;
+					ni.mesh_index = mesh_offset;
+					ni.mesh_skin = mesh.skin;
+				}
+				else
+				{
+					ni.mesh_nodes.push_back(node_offset);
 
-				node_offset++;
+					writeMeshNode(json_nodes, mesh_offset, mesh.nodes[j], mesh.skin, data, settings.quantize && !settings.pos_float ? &qp : NULL);
+
+					node_offset++;
+				}
 			}
 		}
 		else if (mesh.instances.size())
@@ -681,7 +691,7 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 			comma(json_roots[mesh.scene]);
 			append(json_roots[mesh.scene], node_offset);
 
-			writeMeshNode(json_nodes, mesh_offset, NULL, mesh.skin, data, settings.quantize ? &qp : NULL);
+			writeMeshNode(json_nodes, mesh_offset, NULL, mesh.skin, data, settings.quantize && !settings.pos_float ? &qp : NULL);
 
 			node_offset++;
 		}
@@ -1187,6 +1197,20 @@ int main(int argc, char** argv)
 		{
 			settings.col_bits = clamp(atoi(argv[++i]), 1, 16);
 		}
+		else if (strcmp(arg, "-vpi") == 0)
+		{
+			settings.pos_float = false;
+			settings.pos_normalized = false;
+		}
+		else if (strcmp(arg, "-vpn") == 0)
+		{
+			settings.pos_float = false;
+			settings.pos_normalized = true;
+		}
+		else if (strcmp(arg, "-vpf") == 0)
+		{
+			settings.pos_float = true;
+		}
 		else if (strcmp(arg, "-at") == 0 && i + 1 < argc && isdigit(argv[i + 1][0]))
 		{
 			settings.trn_bits = clamp(atoi(argv[++i]), 1, 24);
@@ -1255,11 +1279,19 @@ int main(int argc, char** argv)
 
 			for (int kind = 0; kind < TextureKind__Count; ++kind)
 				if (mask & (1 << kind))
-					settings.texture_uastc[kind] = true;
+					settings.texture_mode[kind] = TextureMode_UASTC;
 		}
 		else if (strcmp(arg, "-tc") == 0)
 		{
 			settings.texture_ktx2 = true;
+
+			unsigned int mask = ~0u;
+			if (i + 1 < argc && isalpha(argv[i + 1][0]))
+				mask = textureMask(argv[++i]);
+
+			for (int kind = 0; kind < TextureKind__Count; ++kind)
+				if (mask & (1 << kind))
+					settings.texture_mode[kind] = TextureMode_ETC1S;
 		}
 		else if (strcmp(arg, "-tq") == 0 && i + 1 < argc && isdigit(argv[i + 1][0]))
 		{
@@ -1292,16 +1324,13 @@ int main(int argc, char** argv)
 		{
 			settings.texture_flipy = true;
 		}
-		else if (strcmp(arg, "-te") == 0)
-		{
-			fprintf(stderr, "Warning: -te is deprecated and will be removed in the future; gltfpack now automatically embeds textures into GLB files\n");
-		}
 		else if (strcmp(arg, "-tj") == 0 && i + 1 < argc && isdigit(argv[i + 1][0]))
 		{
 			settings.texture_jobs = clamp(atoi(argv[++i]), 0, 128);
 		}
 		else if (strcmp(arg, "-noq") == 0)
 		{
+			// TODO: Warn if -noq is used and suggest -vpf instead; use -noqq to silence
 			settings.quantize = false;
 		}
 		else if (strcmp(arg, "-i") == 0 && i + 1 < argc && !input)
@@ -1369,11 +1398,6 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
-#ifdef WITH_BASISU
-	if (settings.texture_ktx2)
-		encodeInit(settings.texture_jobs);
-#endif
-
 	if (test)
 	{
 		for (size_t i = 0; i < testinputs.size(); ++i)
@@ -1408,6 +1432,7 @@ int main(int argc, char** argv)
 			fprintf(stderr, "\t-tfy: flip textures along Y axis during BasisU supercompression\n");
 			fprintf(stderr, "\t-tj N: use N threads when compressing textures\n");
 			fprintf(stderr, "\tTexture classes:\n");
+			fprintf(stderr, "\t-tc C: use ETC1S when encoding textures of class C\n");
 			fprintf(stderr, "\t-tu C: use UASTC when encoding textures of class C\n");
 			fprintf(stderr, "\t-tq C N: set texture encoding quality for class C\n");
 			fprintf(stderr, "\t... where C is a comma-separated list (no spaces) with valid values color,normal,attrib\n");
@@ -1419,6 +1444,10 @@ int main(int argc, char** argv)
 			fprintf(stderr, "\t-vt N: use N-bit quantization for texture coordinates (default: 12; N should be between 1 and 16)\n");
 			fprintf(stderr, "\t-vn N: use N-bit quantization for normals and tangents (default: 8; N should be between 1 and 16)\n");
 			fprintf(stderr, "\t-vc N: use N-bit quantization for colors (default: 8; N should be between 1 and 16)\n");
+			fprintf(stderr, "\nVertex positions:\n");
+			fprintf(stderr, "\t-vpi: use integer attributes for positions (default)\n");
+			fprintf(stderr, "\t-vpn: use normalized attributes for positions\n");
+			fprintf(stderr, "\t-vpf: use floating point attributes for positions\n");
 			fprintf(stderr, "\nAnimations:\n");
 			fprintf(stderr, "\t-at N: use N-bit quantization for translations (default: 16; N should be between 1 and 24)\n");
 			fprintf(stderr, "\t-ar N: use N-bit quantization for rotations (default: 12; N should be between 4 and 16)\n");
@@ -1479,6 +1508,18 @@ int main(int argc, char** argv)
 	if (settings.texture_flipy && !settings.texture_ktx2)
 	{
 		fprintf(stderr, "Option -tfy is only supported when -tc is set as well\n");
+		return 1;
+	}
+
+	if (settings.fallback && settings.compressmore)
+	{
+		fprintf(stderr, "Option -cf can not be used together with -cc\n");
+		return 1;
+	}
+
+	if (settings.fallback && settings.pos_float)
+	{
+		fprintf(stderr, "Option -cf can not be used together with -vpf\n");
 		return 1;
 	}
 

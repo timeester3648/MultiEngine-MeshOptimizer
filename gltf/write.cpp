@@ -180,8 +180,8 @@ static void writeTextureInfo(std::string& json, const cgltf_data* data, const cg
 	{
 		transform.offset[0] += qt->offset[0];
 		transform.offset[1] += qt->offset[1];
-		transform.scale[0] *= qt->scale[0] / float((1 << qt->bits) - 1);
-		transform.scale[1] *= qt->scale[1] / float((1 << qt->bits) - 1);
+		transform.scale[0] *= qt->scale[0] / float((1 << qt->bits) - 1) * (qt->normalized ? 65535.f : 1.f);
+		transform.scale[1] *= qt->scale[1] / float((1 << qt->bits) - 1) * (qt->normalized ? 65535.f : 1.f);
 		has_transform = true;
 	}
 
@@ -470,7 +470,7 @@ static void writeMaterialComponent(std::string& json, const cgltf_data* data, co
 	if (tm.thickness_factor != 0)
 	{
 		// thickness is in mesh coordinate space which is rescaled by quantization
-		float node_scale = qp ? qp->scale / float((1 << qp->bits) - 1) : 1.f;
+		float node_scale = qp ? qp->scale / float((1 << qp->bits) - 1) * (qp->normalized ? 65535.f : 1.f) : 1.f;
 
 		comma(json);
 		append(json, "\"thicknessFactor\":");
@@ -853,7 +853,7 @@ void writeImage(std::string& json, std::vector<BufferView>& views, const cgltf_i
 {
 	bool dataUri = image.uri && strncmp(image.uri, "data:", 5) == 0;
 
-	if (image.uri && !dataUri && !settings.texture_embed && !settings.texture_ktx2)
+	if (image.uri && !dataUri && !settings.texture_embed)
 	{
 		// fast-path: we don't need to read the image to memory
 		append(json, "\"uri\":\"");
@@ -899,7 +899,7 @@ void writeEncodedImage(std::string& json, std::vector<BufferView>& views, const 
 	}
 }
 
-void writeTexture(std::string& json, const cgltf_texture& texture, cgltf_data* data, const Settings& settings)
+void writeTexture(std::string& json, const cgltf_texture& texture, const ImageInfo* info, cgltf_data* data, const Settings& settings)
 {
 	if (texture.image)
 	{
@@ -910,7 +910,7 @@ void writeTexture(std::string& json, const cgltf_texture& texture, cgltf_data* d
 			append(json, ",");
 		}
 
-		if (settings.texture_ktx2)
+		if (info && settings.texture_mode[info->kind] != TextureMode_Raw)
 		{
 			append(json, "\"extensions\":{\"KHR_texture_basisu\":{\"source\":");
 			append(json, size_t(texture.image - data->images));
@@ -948,7 +948,7 @@ void writeMeshAttributes(std::string& json, std::vector<BufferView>& views, std:
 		{
 			float min[3] = {};
 			float max[3] = {};
-			getPositionBounds(min, max, stream, settings.quantize ? &qp : NULL);
+			getPositionBounds(min, max, stream, qp, settings);
 
 			writeAccessor(json_accessors, view, offset, format.type, format.component_type, format.normalized, stream.data.size(), min, max, 3);
 		}
@@ -1026,9 +1026,9 @@ size_t writeJointBindMatrices(std::vector<BufferView>& views, std::string& json_
 			cgltf_accessor_read_float(skin.inverse_bind_matrices, j, transform, 16);
 		}
 
-		if (settings.quantize)
+		if (settings.quantize && !settings.pos_float)
 		{
-			float node_scale = qp.scale / float((1 << qp.bits) - 1);
+			float node_scale = qp.scale / float((1 << qp.bits) - 1) * (qp.normalized ? 65535.f : 1.f);
 
 			// pos_offset has to be applied first, thus it results in an offset rotated by the bind matrix
 			transform[12] += qp.offset[0] * transform[0] + qp.offset[1] * transform[4] + qp.offset[2] * transform[8];
@@ -1083,11 +1083,11 @@ size_t writeInstances(std::vector<BufferView>& views, std::string& json_accessor
 	{
 		decomposeTransform(position[i].f, rotation[i].f, scale[i].f, transforms[i].data);
 
-		if (settings.quantize)
+		if (settings.quantize && !settings.pos_float)
 		{
 			const float* transform = transforms[i].data;
 
-			float node_scale = qp.scale / float((1 << qp.bits) - 1);
+			float node_scale = qp.scale / float((1 << qp.bits) - 1) * (qp.normalized ? 65535.f : 1.f);
 
 			// pos_offset has to be applied first, thus it results in an offset rotated by the instance matrix
 			position[i].f[0] += qp.offset[0] * transform[0] + qp.offset[1] * transform[4] + qp.offset[2] * transform[8];
@@ -1123,7 +1123,7 @@ void writeMeshNode(std::string& json, size_t mesh_offset, cgltf_node* node, cglt
 	}
 	if (qp)
 	{
-		float node_scale = qp->scale / float((1 << qp->bits) - 1);
+		float node_scale = qp->scale / float((1 << qp->bits) - 1) * (qp->normalized ? 65535.f : 1.f);
 
 		append(json, ",\"translation\":[");
 		append(json, qp->offset[0]);
@@ -1255,7 +1255,7 @@ void writeNode(std::string& json, const cgltf_node& node, const std::vector<Node
 		append(json, "]");
 	}
 
-	bool has_children = !ni.meshes.empty();
+	bool has_children = !ni.mesh_nodes.empty();
 	for (size_t j = 0; j < node.children_count; ++j)
 		has_children |= nodes[node.children[j] - data->nodes].keep;
 
@@ -1273,12 +1273,33 @@ void writeNode(std::string& json, const cgltf_node& node, const std::vector<Node
 				append(json, size_t(ci.remap));
 			}
 		}
-		for (size_t j = 0; j < ni.meshes.size(); ++j)
+		for (size_t j = 0; j < ni.mesh_nodes.size(); ++j)
 		{
 			comma(json);
-			append(json, ni.meshes[j]);
+			append(json, ni.mesh_nodes[j]);
 		}
 		append(json, "]");
+	}
+	if (ni.has_mesh)
+	{
+		comma(json);
+		append(json, "\"mesh\":");
+		append(json, ni.mesh_index);
+		if (ni.mesh_skin)
+		{
+			append(json, ",\"skin\":");
+			append(json, size_t(ni.mesh_skin - data->skins));
+		}
+		if (node.weights_count)
+		{
+			append(json, ",\"weights\":[");
+			for (size_t j = 0; j < node.weights_count; ++j)
+			{
+				comma(json);
+				append(json, node.weights[j]);
+			}
+			append(json, "]");
+		}
 	}
 	if (node.camera)
 	{
@@ -1317,7 +1338,7 @@ void writeAnimation(std::string& json, std::vector<BufferView>& views, std::stri
 	if (tracks.empty())
 	{
 		char index[16];
-		sprintf(index, "%d", int(i));
+		snprintf(index, sizeof(index), "%d", int(i));
 
 		fprintf(stderr, "Warning: ignoring animation %s because it has no tracks with motion; use -ac to override\n", animation.name && *animation.name ? animation.name : index);
 		return;
@@ -1394,11 +1415,9 @@ void writeAnimation(std::string& json, std::vector<BufferView>& views, std::stri
 		const NodeInfo& tni = nodes[track.node - data->nodes];
 		size_t target_node = size_t(tni.remap);
 
-		if (track.path == cgltf_animation_path_type_weights)
-		{
-			assert(tni.meshes.size() == 1);
-			target_node = tni.meshes[0];
-		}
+		// when animating morph weights, quantization may move mesh assignments to a mesh node in which case we need to move the animation output
+		if (track.path == cgltf_animation_path_type_weights && tni.mesh_nodes.size() == 1)
+			target_node = tni.mesh_nodes[0];
 
 		comma(json_channels);
 		append(json_channels, "{\"sampler\":");
