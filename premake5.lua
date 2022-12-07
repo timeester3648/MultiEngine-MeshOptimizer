@@ -12,22 +12,3 @@ project "MeshOptimizer"
 		"./src/**.h",
 		"./src/**.cpp"
 	}
-
- 	filter "configurations:Debug"
-		defines { "MLE_DEBUG_BUILD", "DEBUG" }
-		runtime "Debug"
-		symbols "on"
-
-	filter "configurations:Release"
-		defines { "MLE_RELEASE_BUILD", "NDEBUG" }
-		flags { "LinkTimeOptimization" }
-		runtime "Release"
-		optimize "speed"
-		intrinsics "on"
-
-	filter "configurations:Distribution"
-		defines {  "MLE_DISTRIBUTION_BUILD", "NDEBUG" }
-		flags { "LinkTimeOptimization" }
-		runtime "Release"
-		optimize "speed"
-		intrinsics "on"
