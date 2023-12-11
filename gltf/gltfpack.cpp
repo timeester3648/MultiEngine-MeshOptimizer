@@ -354,6 +354,7 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 
 			mi.needsTangents |= vi.needsTangents;
 			mi.textureSetMask |= vi.textureSetMask;
+			mi.unlit &= vi.unlit;
 		}
 
 		filterStreams(mesh, mi);
@@ -958,7 +959,7 @@ static std::string getBufferSpec(const char* bin_path, size_t bin_size, const ch
 
 int gltfpack(const char* input, const char* output, const char* report, Settings settings)
 {
-	cgltf_data* data = 0;
+	cgltf_data* data = NULL;
 	std::vector<Mesh> meshes;
 	std::vector<Animation> animations;
 
@@ -967,7 +968,7 @@ int gltfpack(const char* input, const char* output, const char* report, Settings
 
 	if (iext == ".gltf" || iext == ".glb")
 	{
-		const char* error = 0;
+		const char* error = NULL;
 		data = parseGltf(input, meshes, animations, &error);
 
 		if (error)
@@ -978,7 +979,7 @@ int gltfpack(const char* input, const char* output, const char* report, Settings
 	}
 	else if (iext == ".obj")
 	{
-		const char* error = 0;
+		const char* error = NULL;
 		data = parseObj(input, meshes, &error);
 
 		if (!data)
@@ -1194,6 +1195,7 @@ unsigned int textureMask(const char* arg)
 	return result;
 }
 
+#ifndef GLTFFUZZ
 int main(int argc, char** argv)
 {
 #ifndef __wasi__
@@ -1205,9 +1207,9 @@ int main(int argc, char** argv)
 
 	Settings settings = defaults();
 
-	const char* input = 0;
-	const char* output = 0;
-	const char* report = 0;
+	const char* input = NULL;
+	const char* output = NULL;
+	const char* report = NULL;
 	bool help = false;
 	bool test = false;
 
@@ -1247,13 +1249,13 @@ int main(int argc, char** argv)
 		{
 			settings.pos_float = true;
 		}
-		else if (strcmp(arg, "-vtn") == 0)
-		{
-			settings.tex_float = false;
-		}
 		else if (strcmp(arg, "-vtf") == 0)
 		{
 			settings.tex_float = true;
+		}
+		else if (strcmp(arg, "-vnf") == 0)
+		{
+			settings.nrm_float = true;
 		}
 		else if (strcmp(arg, "-at") == 0 && i + 1 < argc && isdigit(argv[i + 1][0]))
 		{
@@ -1493,7 +1495,7 @@ int main(int argc, char** argv)
 			fprintf(stderr, "\t-si R: simplify meshes targeting triangle/point count ratio R (default: 1; R should be between 0 and 1)\n");
 			fprintf(stderr, "\t-sa: aggressively simplify to the target ratio disregarding quality\n");
 			fprintf(stderr, "\t-slb: lock border vertices during simplification to avoid gaps on connected meshes\n");
-			fprintf(stderr, "\nVertices:\n");
+			fprintf(stderr, "\nVertex precision:\n");
 			fprintf(stderr, "\t-vp N: use N-bit quantization for positions (default: 14; N should be between 1 and 16)\n");
 			fprintf(stderr, "\t-vt N: use N-bit quantization for texture coordinates (default: 12; N should be between 1 and 16)\n");
 			fprintf(stderr, "\t-vn N: use N-bit quantization for normals and tangents (default: 8; N should be between 1 and 16)\n");
@@ -1502,9 +1504,9 @@ int main(int argc, char** argv)
 			fprintf(stderr, "\t-vpi: use integer attributes for positions (default)\n");
 			fprintf(stderr, "\t-vpn: use normalized attributes for positions\n");
 			fprintf(stderr, "\t-vpf: use floating point attributes for positions\n");
-			fprintf(stderr, "\nTexture coordinates:\n");
-			fprintf(stderr, "\t-vtn: use normalized attributes for texture coordinates (default)\n");
+			fprintf(stderr, "\nVertex attributes:\n");
 			fprintf(stderr, "\t-vtf: use floating point attributes for texture coordinates\n");
+			fprintf(stderr, "\t-vnf: use floating point attributes for normals\n");
 			fprintf(stderr, "\nAnimations:\n");
 			fprintf(stderr, "\t-at N: use N-bit quantization for translations (default: 16; N should be between 1 and 24)\n");
 			fprintf(stderr, "\t-ar N: use N-bit quantization for rotations (default: 12; N should be between 4 and 16)\n");
@@ -1580,9 +1582,9 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	if (settings.fallback && (settings.pos_float || settings.tex_float))
+	if (settings.fallback && (settings.pos_float || settings.tex_float || settings.nrm_float))
 	{
-		fprintf(stderr, "Option -cf can not be used together with -vpf or -tpf\n");
+		fprintf(stderr, "Option -cf can not be used together with -vpf, -vtf or -vnf\n");
 		return 1;
 	}
 
@@ -1593,6 +1595,7 @@ int main(int argc, char** argv)
 
 	return gltfpack(input, output, report, settings);
 }
+#endif
 
 #ifdef __wasi__
 extern "C" int pack(int argc, char** argv)
@@ -1602,5 +1605,36 @@ extern "C" int pack(int argc, char** argv)
 	int result = main(argc, argv);
 	fflush(NULL);
 	return result;
+}
+#endif
+
+#ifdef GLTFFUZZ
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* buffer, size_t size)
+{
+	Settings settings = defaults();
+
+	settings.texture_embed = true;
+
+	std::vector<Mesh> meshes;
+	std::vector<Animation> animations;
+
+	const char* error = NULL;
+	cgltf_data* data = parseGlb(buffer, size, meshes, animations, &error);
+
+	// this is a difficult tradeoff
+	// returning 0 on files that fail to parse means that fuzzing is more incremental: files with errors are put into the corpus,
+	// and the subsequent mutations may lead to discovering more interesting inputs, including valid ones that are difficult to find otherwise.
+	// however, this leads to most of the corpus being invalid, and we very rarely get useful coverage for actual gltfpack processing.
+	// for now we just focus on valid files, as we expect cgltf parser itself to be bulletproof as it's fuzzed separately.
+	if (error)
+		return -1;
+
+	std::string json, bin, fallback;
+	size_t fallback_size = 0;
+	process(data, NULL, NULL, NULL, meshes, animations, settings, json, bin, fallback, fallback_size);
+
+	cgltf_free(data);
+
+	return 0;
 }
 #endif

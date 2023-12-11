@@ -1,5 +1,5 @@
 /**
- * gltfpack - version 0.19
+ * gltfpack - version 0.20
  *
  * Copyright (C) 2016-2023, by Arseny Kapoulkine (arseny.kapoulkine@gmail.com)
  * Report bugs and download new versions at https://github.com/zeux/meshoptimizer
@@ -117,6 +117,7 @@ struct Settings
 	bool pos_normalized;
 	bool pos_float;
 	bool tex_float;
+	bool nrm_float;
 
 	int trn_bits;
 	int rot_bits;
@@ -219,6 +220,8 @@ struct MaterialInfo
 
 	bool usesTextureTransform;
 	bool needsTangents;
+	bool unlit;
+
 	unsigned int textureSetMask;
 
 	int remap;
@@ -293,6 +296,8 @@ void removeFile(const char* path);
 
 cgltf_data* parseObj(const char* path, std::vector<Mesh>& meshes, const char** error);
 cgltf_data* parseGltf(const char* path, std::vector<Mesh>& meshes, std::vector<Animation>& animations, const char** error);
+
+cgltf_data* parseGlb(const void* buffer, size_t size, std::vector<Mesh>& meshes, std::vector<Animation>& animations, const char** error);
 
 void processAnimation(Animation& animation, const Settings& settings);
 void processMesh(Mesh& mesh, const Settings& settings);

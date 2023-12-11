@@ -405,11 +405,11 @@ void filterStreams(Mesh& mesh, const MaterialInfo& mi)
 
 		if (stream.target)
 		{
-			morph_normal = morph_normal || (stream.type == cgltf_attribute_type_normal && !isConstant(stream.data, { 0, 0, 0, 0 }));
-			morph_tangent = morph_tangent || (stream.type == cgltf_attribute_type_tangent && !isConstant(stream.data, { 0, 0, 0, 0 }));
+			morph_normal = morph_normal || (stream.type == cgltf_attribute_type_normal && !isConstant(stream.data, {0, 0, 0, 0}));
+			morph_tangent = morph_tangent || (stream.type == cgltf_attribute_type_tangent && !isConstant(stream.data, {0, 0, 0, 0}));
 		}
 
-		if (stream.type == cgltf_attribute_type_texcoord && (mi.textureSetMask & (1u << stream.index)) != 0)
+		if (stream.type == cgltf_attribute_type_texcoord && stream.index < 32 && (mi.textureSetMask & (1u << stream.index)) != 0)
 		{
 			keep_texture_set = std::max(keep_texture_set, stream.index);
 		}
@@ -424,13 +424,16 @@ void filterStreams(Mesh& mesh, const MaterialInfo& mi)
 		if (stream.type == cgltf_attribute_type_texcoord && stream.index > keep_texture_set)
 			continue;
 
+		if (stream.type == cgltf_attribute_type_normal && mi.unlit)
+			continue;
+
 		if (stream.type == cgltf_attribute_type_tangent && !mi.needsTangents)
 			continue;
 
 		if ((stream.type == cgltf_attribute_type_joints || stream.type == cgltf_attribute_type_weights) && !mesh.skin)
 			continue;
 
-		if (stream.type == cgltf_attribute_type_color && isConstant(stream.data, { 1, 1, 1, 1 }))
+		if (stream.type == cgltf_attribute_type_color && isConstant(stream.data, {1, 1, 1, 1}))
 			continue;
 
 		if (stream.target && stream.type == cgltf_attribute_type_normal && !morph_normal)
@@ -521,7 +524,7 @@ static Stream* getStream(Mesh& mesh, cgltf_attribute_type type, int index = 0)
 		if (mesh.streams[i].type == type && mesh.streams[i].index == index)
 			return &mesh.streams[i];
 
-	return 0;
+	return NULL;
 }
 
 static void simplifyMesh(Mesh& mesh, float threshold, bool aggressive, bool lock_borders)
@@ -807,9 +810,9 @@ void debugSimplify(const Mesh& source, Mesh& kinds, Mesh& loops, float ratio)
 
 	simplifyMesh(mesh, ratio, /* aggressive= */ false, /* lock_borders= */ false);
 
-	meshopt_simplifyDebugKind = 0;
-	meshopt_simplifyDebugLoop = 0;
-	meshopt_simplifyDebugLoopBack = 0;
+	meshopt_simplifyDebugKind = NULL;
+	meshopt_simplifyDebugLoop = NULL;
+	meshopt_simplifyDebugLoopBack = NULL;
 
 	// fill out live info
 	for (size_t i = 0; i < mesh.indices.size(); ++i)

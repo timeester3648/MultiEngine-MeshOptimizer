@@ -164,7 +164,7 @@ static T* hashLookup2(T* table, size_t buckets, const Hash& hash, const T& key, 
 	}
 
 	assert(false && "Hash table is full"); // unreachable
-	return 0;
+	return NULL;
 }
 
 static void buildPositionRemap(unsigned int* remap, unsigned int* wedge, const float* vertex_positions_data, size_t vertex_count, size_t vertex_positions_stride, meshopt_Allocator& allocator)
@@ -580,7 +580,7 @@ static float quadricError(const Quadric& Q, const QuadricGrad* G, size_t attribu
 	}
 
 	// TODO: weight normalization is breaking attribute error somehow
-	float s = 1;// Q.w == 0.f ? 0.f : 1.f / Q.w;
+	float s = 1; // Q.w == 0.f ? 0.f : 1.f / Q.w;
 
 	return fabsf(r) * s;
 }
@@ -1325,7 +1325,7 @@ static void fillCellQuadrics(Quadric* cell_quadrics, const unsigned int* indices
 
 static void fillCellReservoirs(Reservoir* cell_reservoirs, size_t cell_count, const Vector3* vertex_positions, const float* vertex_colors, size_t vertex_colors_stride, size_t vertex_count, const unsigned int* vertex_cells)
 {
-	static const float dummy_color[] = { 0.f, 0.f, 0.f };
+	static const float dummy_color[] = {0.f, 0.f, 0.f};
 
 	size_t vertex_colors_stride_float = vertex_colors_stride / sizeof(float);
 
@@ -1380,7 +1380,7 @@ static void fillCellRemap(unsigned int* cell_remap, float* cell_errors, size_t c
 
 static void fillCellRemap(unsigned int* cell_remap, float* cell_errors, size_t cell_count, const unsigned int* vertex_cells, const Reservoir* cell_reservoirs, const Vector3* vertex_positions, const float* vertex_colors, size_t vertex_colors_stride, float color_weight, size_t vertex_count)
 {
-	static const float dummy_color[] = { 0.f, 0.f, 0.f };
+	static const float dummy_color[] = {0.f, 0.f, 0.f};
 
 	size_t vertex_colors_stride_float = vertex_colors_stride / sizeof(float);
 
@@ -1463,9 +1463,9 @@ static float interpolate(float y, float x0, float y0, float x1, float y1, float 
 
 #ifndef NDEBUG
 // Note: this is only exposed for debug visualization purposes; do *not* use these in debug builds
-MESHOPTIMIZER_API unsigned char* meshopt_simplifyDebugKind = 0;
-MESHOPTIMIZER_API unsigned int* meshopt_simplifyDebugLoop = 0;
-MESHOPTIMIZER_API unsigned int* meshopt_simplifyDebugLoopBack = 0;
+MESHOPTIMIZER_API unsigned char* meshopt_simplifyDebugKind = NULL;
+MESHOPTIMIZER_API unsigned int* meshopt_simplifyDebugLoop = NULL;
+MESHOPTIMIZER_API unsigned int* meshopt_simplifyDebugLoopBack = NULL;
 #endif
 
 size_t meshopt_simplifyEdge(unsigned int* destination, const unsigned int* indices, size_t index_count, const float* vertex_positions_data, size_t vertex_count, size_t vertex_positions_stride, const float* vertex_attributes_data, size_t vertex_attributes_stride, const float* attribute_weights, size_t attribute_count, size_t target_index_count, float target_error, unsigned int options, float* out_result_error)
@@ -1611,7 +1611,7 @@ size_t meshopt_simplifyEdge(unsigned int* destination, const unsigned int* indic
 	}
 
 #if TRACE
-	printf("result: %d triangles, error: %e; total %d passes\n", int(result_count), sqrtf(result_error), int(pass_count));
+	printf("result: %d triangles, error: %e; total %d passes\n", int(result_count / 3), sqrtf(result_error), int(pass_count));
 #endif
 
 #ifndef NDEBUG

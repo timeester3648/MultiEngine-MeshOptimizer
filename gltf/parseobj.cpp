@@ -145,7 +145,7 @@ static void parseNodesObj(fastObjMesh* obj, cgltf_data* data)
 static void parseMeshObj(fastObjMesh* obj, unsigned int face_offset, unsigned int face_vertex_offset, unsigned int face_count, unsigned int face_vertex_count, unsigned int index_count, Mesh& mesh)
 {
 	std::vector<unsigned int> remap(face_vertex_count);
-	size_t unique_vertices = meshopt_generateVertexRemap(remap.data(), nullptr, face_vertex_count, &obj->indices[face_vertex_offset], face_vertex_count, sizeof(fastObjIndex));
+	size_t unique_vertices = meshopt_generateVertexRemap(remap.data(), NULL, face_vertex_count, &obj->indices[face_vertex_offset], face_vertex_count, sizeof(fastObjIndex));
 
 	int pos_stream = 0;
 	int nrm_stream = obj->normal_count > 1 ? 1 : -1;
@@ -235,7 +235,7 @@ static void parseMeshGroupObj(fastObjMesh* obj, const fastObjGroup& og, cgltf_da
 	unsigned int face_vertex_offset = og.index_offset;
 	unsigned int face_end_offset = og.face_offset + og.face_count;
 
-	for (unsigned int face_offset = og.face_offset; face_offset < face_end_offset; )
+	for (unsigned int face_offset = og.face_offset; face_offset < face_end_offset;)
 	{
 		unsigned int mi = obj->face_materials[face_offset];
 
@@ -279,7 +279,7 @@ cgltf_data* parseObj(const char* path, std::vector<Mesh>& meshes, const char** e
 	if (!obj)
 	{
 		*error = "file not found";
-		return 0;
+		return NULL;
 	}
 
 	cgltf_data* data = (cgltf_data*)calloc(1, sizeof(cgltf_data));

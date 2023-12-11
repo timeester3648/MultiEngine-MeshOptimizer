@@ -1,5 +1,12 @@
+# IDE integrations
+/.idea/
+/.vs/
+/.vscode/
+
+# Build files
 /build/
-/data/
+/cmake-build-*/
+/out/
 /gltf/library.wasm
 
 # exclude project files
@@ -7,5 +14,6 @@
 **.vcxproj
 **.vcxproj.user
 **.vcxproj.filters
-/.idea/
-/cmake-build-*/
+
+# Test files
+/data/
