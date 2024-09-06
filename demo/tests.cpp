@@ -1151,7 +1151,7 @@ static void simplifyAttr(bool skip_g)
 		{
 			vb[y * 3 + x][0] = float(x);
 			vb[y * 3 + x][1] = float(y);
-			vb[y * 3 + x][2] = 0.03f * x;
+			vb[y * 3 + x][2] = 0.03f * x + 0.03f * (y % 2);
 			vb[y * 3 + x][3] = r;
 			vb[y * 3 + x][4] = g;
 			vb[y * 3 + x][5] = b;
@@ -1173,12 +1173,20 @@ static void simplifyAttr(bool skip_g)
 		}
 	}
 
-	float attr_weights[3] = {0.01f, skip_g ? 0.f : 0.01f, 0.01f};
+	float attr_weights[3] = {0.5f, skip_g ? 0.f : 0.5f, 0.5f};
 
+	// *0  1   *2
+	//  3  4    5
+	//  6  7    8
+	// *9  10 *11
+	// *12 13 *14
+	//  15 16  17
+	//  18 19  20
+	// *21 22 *23
 	unsigned int expected[3][6] = {
-	    {0, 2, 9, 9, 2, 11},
+	    {0, 2, 11, 0, 11, 9},
 	    {9, 11, 12, 12, 11, 14},
-	    {12, 14, 21, 21, 14, 23},
+	    {12, 14, 23, 12, 23, 21},
 	};
 
 	assert(meshopt_simplifyWithAttributes(ib[0], ib[0], 7 * 2 * 6, vb[0], 8 * 3, 6 * sizeof(float), vb[0] + 3, 6 * sizeof(float), attr_weights, 3, NULL, 6 * 3, 1e-2f) == 18);
@@ -1260,7 +1268,7 @@ static void simplifySparse()
 	};
 
 	float aw[] = {
-	    0.2f};
+	    0.5f};
 
 	unsigned char lock[9] = {
 	    8, 1, 8,
@@ -1338,6 +1346,78 @@ static void simplifyErrorAbsolute()
 	assert(fabsf(error - 0.85f) < 0.01f);
 }
 
+static void simplifySeam()
+{
+	// xyz+attr
+	float vb[] = {
+	    0, 0, 0, 0,
+	    0, 1, 0, 0,
+	    0, 1, 0, 1,
+	    0, 2, 0, 1,
+	    1, 0, 0, 0,
+	    1, 1, 0.3f, 0,
+	    1, 1, 0.3f, 1,
+	    1, 2, 0, 1,
+	    2, 0, 0, 0,
+	    2, 1, 0.1f, 0,
+	    2, 1, 0.1f, 1,
+	    2, 2, 0, 1,
+	    3, 0, 0, 0,
+	    3, 1, 0, 0,
+	    3, 1, 0, 1,
+	    3, 2, 0, 1, // clang-format :-/
+	};
+
+	// 0   1-2   3
+	// 4   5-6   7
+	// 8   9-10 11
+	// 12 13-14 15
+
+	unsigned int ib[] = {
+	    0, 1, 4,
+	    4, 1, 5,
+	    2, 3, 6,
+	    6, 3, 7,
+	    4, 5, 8,
+	    8, 5, 9,
+	    6, 7, 10,
+	    10, 7, 11,
+	    8, 9, 12,
+	    12, 9, 13,
+	    10, 11, 14,
+	    14, 11, 15, // clang-format :-/
+	};
+
+	// note: vertices 1-2 and 13-14 are classified as locked, because they are on a seam & a border
+	// since seam->locked collapses are restriced, we only get to 3 triangles on each side as the seam is simplified to 3 vertices
+
+	// so we get this structure initially, and then one of the internal seam vertices is collapsed to the other one:
+	// 0   1-2   3
+	//     5-6
+	//     9-10
+	// 12 13-14 15
+	unsigned int expected[] = {
+	    0, 1, 5,
+	    2, 3, 6,
+	    0, 5, 12,
+	    12, 5, 13,
+	    6, 3, 14,
+	    14, 3, 15, // clang-format :-/
+	};
+
+	unsigned int res[36];
+	float error = 0.f;
+
+	assert(meshopt_simplify(res, ib, 36, vb, 16, 16, 18, 1.f, 0, &error) == 18);
+	assert(memcmp(res, expected, sizeof(expected)) == 0);
+	assert(fabsf(error - 0.04f) < 0.01f); // note: the error is not zero because there is a small difference in height between the seam vertices
+
+	float aw = 1;
+	assert(meshopt_simplifyWithAttributes(res, ib, 36, vb, 16, 16, vb + 3, 16, &aw, 1, NULL, 18, 2.f, 0, &error) == 18);
+	assert(memcmp(res, expected, sizeof(expected)) == 0);
+	assert(fabsf(error - 0.04f) < 0.01f); // note: this is the same error as above because the attribute is constant on either side of the seam
+}
+
 static void adjacency()
 {
 	// 0 1/4
@@ -1394,6 +1474,42 @@ static void tessellation()
 	};
 
 	assert(memcmp(tessib, expected, sizeof(expected)) == 0);
+}
+
+static void provoking()
+{
+	// 0 1 2
+	// 3 4 5
+	const unsigned int ib[] = {
+	    0, 1, 3,
+	    3, 1, 4,
+	    1, 2, 4,
+	    4, 2, 5,
+	    0, 2, 4,
+	    // clang-format :-/
+	};
+
+	unsigned int pib[15];
+	unsigned int pre[6 + 5]; // limit is vertex count + triangle count
+	size_t res = meshopt_generateProvokingIndexBuffer(pib, pre, ib, 15, 6);
+
+	unsigned int expectedib[] = {
+	    0, 5, 1,
+	    1, 4, 0,
+	    2, 4, 1,
+	    3, 4, 2,
+	    4, 5, 2,
+	    // clang-format :-/
+	};
+
+	unsigned int expectedre[] = {
+	    3, 1, 2, 5, 4, 0,
+	    // clang-format :-/
+	};
+
+	assert(res == 6);
+	assert(memcmp(pib, expectedib, sizeof(expectedib)) == 0);
+	assert(memcmp(pre, expectedre, sizeof(expectedre)) == 0);
 }
 
 static void quantizeFloat()
@@ -1556,9 +1672,11 @@ void runTests()
 	simplifyLockFlags();
 	simplifySparse();
 	simplifyErrorAbsolute();
+	simplifySeam();
 
 	adjacency();
 	tessellation();
+	provoking();
 
 	quantizeFloat();
 	quantizeHalf();
