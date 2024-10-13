@@ -15,6 +15,7 @@
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <map>
 #include <vector>
@@ -50,6 +51,9 @@ struct Cluster
 };
 
 const size_t kClusterSize = 128;
+const size_t kGroupSize = 8;
+const bool kUseLocks = true;
+const bool kUseNormals = true;
 
 static LODBounds bounds(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices, float error)
 {
@@ -104,11 +108,15 @@ static LODBounds boundsMerge(const std::vector<Cluster>& clusters, const std::ve
 	return result;
 }
 
-static float boundsError(const LODBounds& bounds, float x, float y, float z)
+// computes approximate (perspective) projection error of a cluster in screen space (0..1; multiply by screen height to get pixels)
+// camera_proj is projection[1][1], or cot(fovy/2); camera_znear is *positive* near plane distance
+// for DAG cut to be valid, boundsError must be monotonic: it must return a larger error for parent cluster
+// for simplicity, we ignore perspective distortion and use rotationally invariant projection size estimation
+static float boundsError(const LODBounds& bounds, float camera_x, float camera_y, float camera_z, float camera_proj, float camera_znear)
 {
-	float dx = bounds.center[0] - x, dy = bounds.center[1] - y, dz = bounds.center[2] - z;
+	float dx = bounds.center[0] - camera_x, dy = bounds.center[1] - camera_y, dz = bounds.center[2] - camera_z;
 	float d = sqrtf(dx * dx + dy * dy + dz * dz) - bounds.radius;
-	return d <= 0 ? FLT_MAX : bounds.error / d;
+	return bounds.error / (d > camera_znear ? d : camera_znear) * (camera_proj * 0.5f);
 }
 
 #ifdef METIS
@@ -274,11 +282,10 @@ static std::vector<Cluster> clusterize(const std::vector<Vertex>& vertices, cons
 }
 
 #ifdef METIS
-static std::vector<std::vector<int> > partitionMetis(const std::vector<Cluster>& clusters, const std::vector<int>& pending)
+static std::vector<std::vector<int> > partitionMetis(const std::vector<Cluster>& clusters, const std::vector<int>& pending, const std::vector<unsigned int>& remap)
 {
 	std::vector<std::vector<int> > result;
-
-	std::map<std::pair<int, int>, std::vector<int> > edges;
+	std::vector<std::vector<int> > vertices(remap.size());
 
 	for (size_t i = 0; i < pending.size(); ++i)
 	{
@@ -286,10 +293,9 @@ static std::vector<std::vector<int> > partitionMetis(const std::vector<Cluster>&
 
 		for (size_t j = 0; j < cluster.indices.size(); ++j)
 		{
-			int v0 = cluster.indices[j + 0];
-			int v1 = cluster.indices[j + (j % 3 == 2 ? -2 : 1)];
+			int v = remap[cluster.indices[j]];
 
-			std::vector<int>& list = edges[std::make_pair(std::min(v0, v1), std::max(v0, v1))];
+			std::vector<int>& list = vertices[v];
 			if (list.empty() || list.back() != int(i))
 				list.push_back(int(i));
 		}
@@ -297,9 +303,9 @@ static std::vector<std::vector<int> > partitionMetis(const std::vector<Cluster>&
 
 	std::map<std::pair<int, int>, int> adjacency;
 
-	for (std::map<std::pair<int, int>, std::vector<int> >::iterator it = edges.begin(); it != edges.end(); ++it)
+	for (size_t v = 0; v < vertices.size(); ++v)
 	{
-		const std::vector<int>& list = it->second;
+		const std::vector<int>& list = vertices[v];
 
 		for (size_t i = 0; i < list.size(); ++i)
 			for (size_t j = i + 1; j < list.size(); ++j)
@@ -335,7 +341,7 @@ static std::vector<std::vector<int> > partitionMetis(const std::vector<Cluster>&
 
 	int nvtxs = int(pending.size());
 	int ncon = 1;
-	int nparts = int(pending.size() + 3) / 4;
+	int nparts = int(pending.size() + kGroupSize - 1) / kGroupSize;
 	int edgecut = 0;
 
 	if (nparts <= 1)
@@ -358,13 +364,15 @@ static std::vector<std::vector<int> > partitionMetis(const std::vector<Cluster>&
 }
 #endif
 
-static std::vector<std::vector<int> > partition(const std::vector<Cluster>& clusters, const std::vector<int>& pending)
+static std::vector<std::vector<int> > partition(const std::vector<Cluster>& clusters, const std::vector<int>& pending, const std::vector<unsigned int>& remap)
 {
 #ifdef METIS
 	static const char* metis = getenv("METIS");
 	if (metis && atoi(metis) >= 1)
-		return partitionMetis(clusters, pending);
+		return partitionMetis(clusters, pending, remap);
 #endif
+
+	(void)remap;
 
 	std::vector<std::vector<int> > result;
 
@@ -373,7 +381,7 @@ static std::vector<std::vector<int> > partition(const std::vector<Cluster>& clus
 	// rough merge; while clusters are approximately spatially ordered, this should use a proper partitioning algorithm
 	for (size_t i = 0; i < pending.size(); ++i)
 	{
-		if (result.empty() || last_indices + clusters[pending[i]].indices.size() > kClusterSize * 4 * 3)
+		if (result.empty() || last_indices + clusters[pending[i]].indices.size() > kClusterSize * kGroupSize * 3)
 		{
 			result.push_back(std::vector<int>());
 			last_indices = 0;
@@ -386,15 +394,50 @@ static std::vector<std::vector<int> > partition(const std::vector<Cluster>& clus
 	return result;
 }
 
-static std::vector<unsigned int> simplify(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices, size_t target_count, float* error = NULL)
+static void lockBoundary(std::vector<unsigned char>& locks, const std::vector<std::vector<int> >& groups, const std::vector<Cluster>& clusters, const std::vector<unsigned int>& remap)
+{
+	std::vector<int> groupmap(locks.size(), -1);
+
+	for (size_t i = 0; i < groups.size(); ++i)
+		for (size_t j = 0; j < groups[i].size(); ++j)
+		{
+			const Cluster& cluster = clusters[groups[i][j]];
+
+			for (size_t k = 0; k < cluster.indices.size(); ++k)
+			{
+				unsigned int v = cluster.indices[k];
+				unsigned int r = remap[v];
+
+				if (groupmap[r] == -1 || groupmap[r] == int(i))
+					groupmap[r] = int(i);
+				else
+					groupmap[r] = -2;
+			}
+		}
+
+	// note: we need to consistently lock all vertices with the same position to avoid holes
+	for (size_t i = 0; i < locks.size(); ++i)
+	{
+		unsigned int r = remap[i];
+
+		locks[i] = (groupmap[r] == -2);
+	}
+}
+
+static std::vector<unsigned int> simplify(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices, const std::vector<unsigned char>* locks, size_t target_count, float* error = NULL)
 {
 	if (target_count > indices.size())
 		return indices;
 
 	std::vector<unsigned int> lod(indices.size());
-	unsigned int options = meshopt_SimplifyLockBorder | meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute;
-	lod.resize(meshopt_simplify(&lod[0], &indices[0], indices.size(), &vertices[0].px, vertices.size(), sizeof(Vertex), target_count, FLT_MAX, options, error));
-
+	unsigned int options = meshopt_SimplifySparse | meshopt_SimplifyErrorAbsolute;
+	float normal_weights[3] = {0.5f, 0.5f, 0.5f};
+	if (kUseNormals)
+		lod.resize(meshopt_simplifyWithAttributes(&lod[0], &indices[0], indices.size(), &vertices[0].px, vertices.size(), sizeof(Vertex), &vertices[0].nx, sizeof(Vertex), normal_weights, 3, locks ? &(*locks)[0] : NULL, target_count, FLT_MAX, options, error));
+	else if (locks)
+		lod.resize(meshopt_simplifyWithAttributes(&lod[0], &indices[0], indices.size(), &vertices[0].px, vertices.size(), sizeof(Vertex), NULL, 0, NULL, 0, &(*locks)[0], target_count, FLT_MAX, options, error));
+	else
+		lod.resize(meshopt_simplify(&lod[0], &indices[0], indices.size(), &vertices[0].px, vertices.size(), sizeof(Vertex), target_count, FLT_MAX, options | meshopt_SimplifyLockBorder, error));
 	return lod;
 }
 
@@ -431,11 +474,18 @@ void nanite(const std::vector<Vertex>& vertices, const std::vector<unsigned int>
 #endif
 
 	int depth = 0;
+	std::vector<unsigned char> locks(vertices.size());
+
+	// for cluster connectivity, we need a position-only remap that maps vertices with the same position to the same index
+	// it's more efficient to build it once; unfortunately, meshopt_generateVertexRemap doesn't support stride so we need to use *Multi version
+	std::vector<unsigned int> remap(vertices.size());
+	meshopt_Stream position = {&vertices[0].px, sizeof(float) * 3, sizeof(Vertex)};
+	meshopt_generateVertexRemapMulti(&remap[0], &indices[0], indices.size(), vertices.size(), &position, 1);
 
 	// merge and simplify clusters until we can't merge anymore
 	while (pending.size() > 1)
 	{
-		std::vector<std::vector<int> > groups = partition(clusters, pending);
+		std::vector<std::vector<int> > groups = partition(clusters, pending, remap);
 		pending.clear();
 
 		std::vector<int> retry;
@@ -448,6 +498,9 @@ void nanite(const std::vector<Vertex>& vertices, const std::vector<unsigned int>
 
 		if (dump && depth == atoi(dump))
 			dumpObj(vertices, std::vector<unsigned int>());
+
+		if (kUseLocks)
+			lockBoundary(locks, groups, clusters, remap);
 
 		// every group needs to be simplified now
 		for (size_t i = 0; i < groups.size(); ++i)
@@ -476,11 +529,17 @@ void nanite(const std::vector<Vertex>& vertices, const std::vector<unsigned int>
 				merged.insert(merged.end(), clusters[groups[i][j]].indices.begin(), clusters[groups[i][j]].indices.end());
 
 			if (dump && depth == atoi(dump))
-				dumpObj("group", merged);
+			{
+				for (size_t j = 0; j < groups[i].size(); ++j)
+					dumpObj("cluster", clusters[groups[i][j]].indices);
 
+				dumpObj("group", merged);
+			}
+
+			size_t target_size = ((groups[i].size() + 1) / 2) * kClusterSize * 3;
 			float error = 0.f;
-			std::vector<unsigned int> simplified = simplify(vertices, merged, kClusterSize * 2 * 3, &error);
-			if (simplified.size() > merged.size() * 0.85f || simplified.size() > kClusterSize * 3 * 3)
+			std::vector<unsigned int> simplified = simplify(vertices, merged, kUseLocks ? &locks : NULL, target_size, &error);
+			if (simplified.size() > merged.size() * 0.85f || simplified.size() / (kClusterSize * 3) >= merged.size() / (kClusterSize * 3))
 			{
 #if TRACE
 				printf("stuck cluster: simplified %d => %d over threshold\n", int(merged.size() / 3), int(simplified.size() / 3));
@@ -536,11 +595,16 @@ void nanite(const std::vector<Vertex>& vertices, const std::vector<unsigned int>
 		pending.insert(pending.end(), retry.begin(), retry.end());
 	}
 
+	size_t total_triangles = 0;
 	size_t lowest_triangles = 0;
 	for (size_t i = 0; i < clusters.size(); ++i)
+	{
+		total_triangles += clusters[i].indices.size() / 3;
 		if (clusters[i].parent.error == FLT_MAX)
 			lowest_triangles += clusters[i].indices.size() / 3;
+	}
 
+	printf("total: %d triangles in %d clusters\n", int(total_triangles), int(clusters.size()));
 	printf("lowest lod: %d triangles\n", int(lowest_triangles));
 
 	// for testing purposes, we can compute a DAG cut from a given viewpoint and dump it as an OBJ
@@ -551,20 +615,24 @@ void nanite(const std::vector<Vertex>& vertices, const std::vector<unsigned int>
 		maxy = std::max(maxy, vertices[i].py * 2);
 		maxz = std::max(maxz, vertices[i].pz * 2);
 	}
-	float threshold = 3e-3f;
+
+	float threshold = 2e-3f; // 2 pixels at 1080p
+	float fovy = 60.f;
+	float znear = 1e-2f;
+	float proj = 1.f / tanf(fovy * 3.1415926f / 180.f * 0.5f);
 
 	std::vector<unsigned int> cut;
 	for (size_t i = 0; i < clusters.size(); ++i)
-		if (boundsError(clusters[i].self, maxx, maxy, maxz) <= threshold && boundsError(clusters[i].parent, maxx, maxy, maxz) > threshold)
+		if (boundsError(clusters[i].self, maxx, maxy, maxz, proj, znear) <= threshold && boundsError(clusters[i].parent, maxx, maxy, maxz, proj, znear) > threshold)
 			cut.insert(cut.end(), clusters[i].indices.begin(), clusters[i].indices.end());
 
 #ifndef NDEBUG
 	for (size_t i = 0; i < dag_debug.size(); ++i)
 	{
 		int j = dag_debug[i].first, k = dag_debug[i].second;
-		float ej = boundsError(clusters[j].self, maxx, maxy, maxz);
-		float ejp = boundsError(clusters[j].parent, maxx, maxy, maxz);
-		float ek = boundsError(clusters[k].self, maxx, maxy, maxz);
+		float ej = boundsError(clusters[j].self, maxx, maxy, maxz, proj, znear);
+		float ejp = boundsError(clusters[j].parent, maxx, maxy, maxz, proj, znear);
+		float ek = boundsError(clusters[k].self, maxx, maxy, maxz, proj, znear);
 
 		assert(ej <= ek);
 		assert(ejp >= ej);
@@ -578,7 +646,7 @@ void nanite(const std::vector<Vertex>& vertices, const std::vector<unsigned int>
 		dumpObj(vertices, cut);
 
 		for (size_t i = 0; i < clusters.size(); ++i)
-			if (boundsError(clusters[i].self, maxx, maxy, maxz) <= threshold && boundsError(clusters[i].parent, maxx, maxy, maxz) > threshold)
+			if (boundsError(clusters[i].self, maxx, maxy, maxz, proj, znear) <= threshold && boundsError(clusters[i].parent, maxx, maxy, maxz, proj, znear) > threshold)
 				dumpObj("cluster", clusters[i].indices);
 	}
 }

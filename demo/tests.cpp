@@ -909,39 +909,19 @@ static void simplify()
 	// 1 2
 	// 3 4 5
 	unsigned int ib[] = {
-	    0,
-	    2,
-	    1,
-	    1,
-	    2,
-	    3,
-	    3,
-	    2,
-	    4,
-	    2,
-	    5,
-	    4,
+	    0, 2, 1,
+	    1, 2, 3,
+	    3, 2, 4,
+	    2, 5, 4, // clang-format :-/
 	};
 
 	float vb[] = {
-	    0,
-	    4,
-	    0,
-	    0,
-	    1,
-	    0,
-	    2,
-	    2,
-	    0,
-	    0,
-	    0,
-	    0,
-	    1,
-	    0,
-	    0,
-	    4,
-	    0,
-	    0,
+	    0, 4, 0,
+	    0, 1, 0,
+	    2, 2, 0,
+	    0, 0, 0,
+	    1, 0, 0,
+	    4, 0, 0, // clang-format :-/
 	};
 
 	unsigned int expected[] = {
@@ -1151,7 +1131,7 @@ static void simplifyAttr(bool skip_g)
 		{
 			vb[y * 3 + x][0] = float(x);
 			vb[y * 3 + x][1] = float(y);
-			vb[y * 3 + x][2] = 0.03f * x + 0.03f * (y % 2);
+			vb[y * 3 + x][2] = 0.03f * x + 0.03f * (y % 2) + (x == 2 && y == 7) * 0.03f;
 			vb[y * 3 + x][3] = r;
 			vb[y * 3 + x][4] = g;
 			vb[y * 3 + x][5] = b;
@@ -1239,6 +1219,78 @@ static void simplifyLockFlags()
 
 	assert(meshopt_simplifyWithAttributes(ib, ib, 24, vb, 9, 12, NULL, 0, NULL, 0, lock, 3, 1e-3f, 0) == 18);
 	assert(memcmp(ib, expected, sizeof(expected)) == 0);
+}
+
+static void simplifyLockFlagsSeam()
+{
+	float vb[] = {
+	    0, 0, 0,
+	    0, 1, 0,
+	    0, 1, 0,
+	    0, 2, 0,
+	    1, 0, 0,
+	    1, 1, 0,
+	    1, 1, 0,
+	    1, 2, 0,
+	    2, 0, 0,
+	    2, 1, 0,
+	    2, 1, 0,
+	    2, 2, 0, // clang-format :-/
+	};
+
+	unsigned char lock0[12] = {
+	    1, 0, 0, 1,
+	    0, 0, 0, 0,
+	    1, 0, 0, 1, // clang-format :-/
+	};
+
+	unsigned char lock1[12] = {
+	    1, 0, 0, 1,
+	    1, 0, 0, 1,
+	    1, 0, 0, 1, // clang-format :-/
+	};
+
+	unsigned char lock2[12] = {
+	    1, 0, 1, 1,
+	    1, 0, 1, 1,
+	    1, 0, 1, 1, // clang-format :-/
+	};
+
+	unsigned char lock3[12] = {
+	    1, 1, 0, 1,
+	    1, 1, 0, 1,
+	    1, 1, 0, 1, // clang-format :-/
+	};
+
+	// 0 1-2 3
+	// 4 5-6 7
+	// 8 9-10 11
+
+	unsigned int ib[] = {
+	    0, 1, 4,
+	    4, 1, 5,
+	    4, 5, 8,
+	    8, 5, 9,
+	    2, 3, 6,
+	    6, 3, 7,
+	    6, 7, 10,
+	    10, 7, 11, // clang-format :-/
+	};
+
+	unsigned int res[24];
+	// with no locks, we should be able to collapse the entire mesh (vertices 1-2 and 9-10 are locked but others can move towards them)
+	assert(meshopt_simplifyWithAttributes(res, ib, 24, vb, 12, 12, NULL, 0, NULL, 0, NULL, 0, 1.f, 0) == 0);
+
+	// with corners locked, we should get two quads
+	assert(meshopt_simplifyWithAttributes(res, ib, 24, vb, 12, 12, NULL, 0, NULL, 0, lock0, 0, 1.f, 0) == 12);
+
+	// with both sides locked, we can only collapse the seam spine
+	assert(meshopt_simplifyWithAttributes(res, ib, 24, vb, 12, 12, NULL, 0, NULL, 0, lock1, 0, 1.f, 0) == 18);
+
+	// with seam spine locked, we can collapse nothing; note that we intentionally test two different lock configurations
+	// they each lock only one side of the seam spine, which should be equivalent
+	assert(meshopt_simplifyWithAttributes(res, ib, 24, vb, 12, 12, NULL, 0, NULL, 0, lock2, 0, 1.f, 0) == 24);
+	assert(meshopt_simplifyWithAttributes(res, ib, 24, vb, 12, 12, NULL, 0, NULL, 0, lock3, 0, 1.f, 0) == 24);
 }
 
 static void simplifySparse()
@@ -1389,33 +1441,157 @@ static void simplifySeam()
 	};
 
 	// note: vertices 1-2 and 13-14 are classified as locked, because they are on a seam & a border
-	// since seam->locked collapses are restriced, we only get to 3 triangles on each side as the seam is simplified to 3 vertices
-
-	// so we get this structure initially, and then one of the internal seam vertices is collapsed to the other one:
 	// 0   1-2   3
 	//     5-6
 	//     9-10
 	// 12 13-14 15
 	unsigned int expected[] = {
-	    0, 1, 5,
-	    2, 3, 6,
-	    0, 5, 12,
-	    12, 5, 13,
-	    6, 3, 14,
+	    0, 1, 13,
+	    2, 3, 14,
+	    0, 13, 12,
 	    14, 3, 15, // clang-format :-/
 	};
 
 	unsigned int res[36];
 	float error = 0.f;
 
-	assert(meshopt_simplify(res, ib, 36, vb, 16, 16, 18, 1.f, 0, &error) == 18);
+	assert(meshopt_simplify(res, ib, 36, vb, 16, 16, 12, 1.f, 0, &error) == 12);
 	assert(memcmp(res, expected, sizeof(expected)) == 0);
-	assert(fabsf(error - 0.04f) < 0.01f); // note: the error is not zero because there is a small difference in height between the seam vertices
+	assert(fabsf(error - 0.09f) < 0.01f); // note: the error is not zero because there is a difference in height between the seam vertices
 
 	float aw = 1;
-	assert(meshopt_simplifyWithAttributes(res, ib, 36, vb, 16, 16, vb + 3, 16, &aw, 1, NULL, 18, 2.f, 0, &error) == 18);
+	assert(meshopt_simplifyWithAttributes(res, ib, 36, vb, 16, 16, vb + 3, 16, &aw, 1, NULL, 12, 2.f, 0, &error) == 12);
 	assert(memcmp(res, expected, sizeof(expected)) == 0);
-	assert(fabsf(error - 0.04f) < 0.01f); // note: this is the same error as above because the attribute is constant on either side of the seam
+	assert(fabsf(error - 0.09f) < 0.01f); // note: this is the same error as above because the attribute is constant on either side of the seam
+}
+
+static void simplifySeamFake()
+{
+	// xyz+attr
+	float vb[] = {
+	    0, 0, 0, 0,
+	    1, 0, 0, 1,
+	    1, 0, 0, 2,
+	    0, 0, 0, 3, // clang-format :-/
+	};
+
+	unsigned int ib[] = {
+	    0, 1, 2,
+	    2, 1, 3, // clang-format :-/
+	};
+
+	assert(meshopt_simplify(ib, ib, 6, vb, 4, 16, 0, 1.f, 0, NULL) == 6);
+}
+
+static void simplifyDebug()
+{
+	// 0
+	// 1 2
+	// 3 4 5
+	unsigned int ib[] = {
+	    0, 2, 1,
+	    1, 2, 3,
+	    3, 2, 4,
+	    2, 5, 4, // clang-format :-/
+	};
+
+	float vb[] = {
+	    0, 4, 0,
+	    0, 1, 0,
+	    2, 2, 0,
+	    0, 0, 0,
+	    1, 0, 0,
+	    4, 0, 0, // clang-format :-/
+	};
+
+	unsigned int expected[] = {
+	    0 | (9u << 28),
+	    5 | (9u << 28),
+	    3 | (9u << 28),
+	};
+
+	const unsigned int meshopt_SimplifyInternalDebug = 1 << 30;
+
+	float error;
+	assert(meshopt_simplify(ib, ib, 12, vb, 6, 12, 3, 1e-2f, meshopt_SimplifyInternalDebug, &error) == 3);
+	assert(error == 0.f);
+	assert(memcmp(ib, expected, sizeof(expected)) == 0);
+}
+
+static void simplifyPrune()
+{
+	// 0
+	// 1 2
+	// 3 4 5
+	// +
+	// 6 7 8 (same position)
+	unsigned int ib[] = {
+	    0, 2, 1,
+	    1, 2, 3,
+	    3, 2, 4,
+	    2, 5, 4,
+	    6, 7, 8, // clang-format :-/
+	};
+
+	float vb[] = {
+	    0, 4, 0,
+	    0, 1, 0,
+	    2, 2, 0,
+	    0, 0, 0,
+	    1, 0, 0,
+	    4, 0, 0,
+	    1, 1, 1,
+	    1, 1, 1,
+	    1, 1, 1, // clang-format :-/
+	};
+
+	unsigned int expected[] = {
+	    0,
+	    5,
+	    3,
+	};
+
+	float error;
+	assert(meshopt_simplify(ib, ib, 15, vb, 9, 12, 3, 1e-2f, meshopt_SimplifyPrune, &error) == 3);
+	assert(error == 0.f);
+	assert(memcmp(ib, expected, sizeof(expected)) == 0);
+
+	// re-run prune with and without sparsity on a small subset to make sure the component code correctly handles sparse subsets
+	assert(meshopt_simplify(ib, ib, 3, vb, 9, 12, 3, 1e-2f, meshopt_SimplifyPrune, &error) == 3);
+	assert(meshopt_simplify(ib, ib, 3, vb, 9, 12, 3, 1e-2f, meshopt_SimplifyPrune | meshopt_SimplifySparse, &error) == 3);
+	assert(memcmp(ib, expected, sizeof(expected)) == 0);
+}
+
+static void simplifyPruneCleanup()
+{
+	unsigned int ib[] = {
+	    0, 1, 2,
+	    3, 4, 5,
+	    6, 7, 8, // clang-format :-/
+	};
+
+	float vb[] = {
+	    0, 0, 0,
+	    0, 1, 0,
+	    1, 0, 0,
+	    0, 0, 1,
+	    0, 2, 1,
+	    2, 0, 1,
+	    0, 0, 2,
+	    0, 4, 2,
+	    4, 0, 2, // clang-format :-/
+	};
+
+	unsigned int expected[] = {
+	    6,
+	    7,
+	    8,
+	};
+
+	float error;
+	assert(meshopt_simplify(ib, ib, 9, vb, 9, 12, 3, 1.f, meshopt_SimplifyLockBorder | meshopt_SimplifyPrune, &error) == 3);
+	assert(fabsf(error - 0.37f) < 0.01f);
+	assert(memcmp(ib, expected, sizeof(expected)) == 0);
 }
 
 static void adjacency()
@@ -1670,9 +1846,14 @@ void runTests()
 	simplifyAttr(/* skip_g= */ false);
 	simplifyAttr(/* skip_g= */ true);
 	simplifyLockFlags();
+	simplifyLockFlagsSeam();
 	simplifySparse();
 	simplifyErrorAbsolute();
 	simplifySeam();
+	simplifySeamFake();
+	simplifyDebug();
+	simplifyPrune();
+	simplifyPruneCleanup();
 
 	adjacency();
 	tessellation();

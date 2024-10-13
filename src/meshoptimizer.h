@@ -269,6 +269,7 @@ MESHOPTIMIZER_API int meshopt_decodeIndexSequence(void* destination, size_t inde
  * Returns encoded data size on success, 0 on error; the only error condition is if buffer doesn't have enough space
  * This function works for a single vertex stream; for multiple vertex streams, call meshopt_encodeVertexBuffer for each stream.
  * Note that all vertex_size bytes of each vertex are encoded verbatim, including padding which should be zero-initialized.
+ * For maximum efficiency the vertex buffer being encoded has to be quantized and optimized for locality of reference (cache/fetch) first.
  *
  * buffer must contain enough space for the encoded vertex buffer (use meshopt_encodeVertexBufferBound to compute worst case size)
  */
@@ -349,6 +350,8 @@ enum
 	meshopt_SimplifySparse = 1 << 1,
 	/* Treat error limit and resulting error as absolute instead of relative to mesh extents. */
 	meshopt_SimplifyErrorAbsolute = 1 << 2,
+	/* Experimental: remove disconnected parts of the mesh during simplification incrementally, regardless of the topological restrictions inside components. */
+	meshopt_SimplifyPrune = 1 << 3,
 };
 
 /**
@@ -370,7 +373,7 @@ MESHOPTIMIZER_API size_t meshopt_simplify(unsigned int* destination, const unsig
 
 /**
  * Experimental: Mesh simplifier with attribute metric
- * The algorithm ehnahces meshopt_simplify by incorporating attribute values into the error metric used to prioritize simplification order; see meshopt_simplify documentation for details.
+ * The algorithm enhances meshopt_simplify by incorporating attribute values into the error metric used to prioritize simplification order; see meshopt_simplify documentation for details.
  * Note that the number of attributes affects memory requirements and running time; this algorithm requires ~1.5x more memory and time compared to meshopt_simplify when using 4 scalar attributes.
  *
  * vertex_attributes should have attribute_count floats for each vertex
