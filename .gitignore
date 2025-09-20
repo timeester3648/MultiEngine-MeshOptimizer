@@ -1,13 +1,17 @@
 # IDE integrations
+/.cache/
 /.idea/
 /.vs/
 /.vscode/
+/.zed/
 
 # Build files
 /build/
-/cmake-build-*/
+/cmake*/
 /out/
+/*.dSYM/
 /gltf/library.wasm
+compile_commands.json
 
 # exclude project files
 **.sln
@@ -17,3 +21,5 @@
 
 # Test files
 /data/
+/*.log
+/perf.data*
