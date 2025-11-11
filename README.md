@@ -183,13 +183,13 @@ To generate meshlet data, this library provides `meshopt_buildMeshlets` algorith
 
 ```c++
 const size_t max_vertices = 64;
-const size_t max_triangles = 126;
+const size_t max_triangles = 126; // note: in v0.25 or prior, max_triangles needs to be divisible by 4
 const float cone_weight = 0.0f;
 
 size_t max_meshlets = meshopt_buildMeshletsBound(indices.size(), max_vertices, max_triangles);
 std::vector<meshopt_Meshlet> meshlets(max_meshlets);
 std::vector<unsigned int> meshlet_vertices(indices.size());
-std::vector<unsigned char> meshlet_triangles(indices.size());
+std::vector<unsigned char> meshlet_triangles(indices.size()); // note: in v0.25 or prior, use indices.size() + max_meshlets * 3
 
 size_t meshlet_count = meshopt_buildMeshlets(meshlets.data(), meshlet_vertices.data(), meshlet_triangles.data(), indices.data(),
     indices.size(), &vertices[0].x, vertices.size(), sizeof(Vertex), max_vertices, max_triangles, cone_weight);
@@ -241,6 +241,8 @@ void main() {
 }
 ```
 
+> Note that DirectX 12 mesh shaders cannot index raw buffers using arbitrary byte offsets. Use a typed SRV buffer (`Buffer<uint>`) with `DXGI_FORMAT_R8_UINT` format, repack each triangle to 32 bits to be able to use aligned 32-bit loads with `ByteAddressBuffer`, or consider utilizing [16-bit scalar types](https://github.com/microsoft/DirectXShaderCompiler/wiki/16-Bit-Scalar-Types) to load a 3-byte triangle using two aligned 16-bit loads like so: `Buffer.Load<uint16_t2>(triangle_offset & ~1)`, then extracting indices with bitwise operations based on `triangle_offset & 1`.
+
 After generating the meshlet data, it's possible to generate extra data for each meshlet that can be saved and used at runtime to perform cluster culling, where each meshlet can be discarded if it's guaranteed to be invisible. To generate the data, `meshopt_computeMeshletBounds` can be used:
 
 ```c++
@@ -275,7 +277,7 @@ const float fill_weight = 0.5f;
 size_t max_meshlets = meshopt_buildMeshletsBound(indices.size(), max_vertices, min_triangles); // note: use min_triangles to compute worst case bound
 std::vector<meshopt_Meshlet> meshlets(max_meshlets);
 std::vector<unsigned int> meshlet_vertices(indices.size());
-std::vector<unsigned char> meshlet_triangles(indices.size());
+std::vector<unsigned char> meshlet_triangles(indices.size()); // note: in v0.25 or prior, use indices.size() + max_meshlets * 3
 
 size_t meshlet_count = meshopt_buildMeshletsSpatial(meshlets.data(), meshlet_vertices.data(), meshlet_triangles.data(), indices.data(),
     indices.size(), &vertices[0].x, vertices.size(), sizeof(Vertex), max_vertices, min_triangles, max_triangles, fill_weight);
@@ -285,7 +287,9 @@ The algorithm recursively subdivides the triangles into a BVH-like hierarchy usi
 
 The `min_triangles` and `max_triangles` parameters control the allowed range of triangles per cluster. For optimal raytracing performance, `min_triangles` should be at most `max_triangles/2` (or, ideally, `max_triangles/4`) to give the algorithm enough freedom to produce high-quality spatial partitioning. For meshes with few seams due to normal or UV discontinuities, using `max_vertices` equal to `max_triangles` is recommended when rasterization performance is a concern; for meshes with many seams or for renderers that primarily use meshlets for ray tracing, a higher `max_vertices` value should be used as it ensures that more clusters can fully utilize the triangle limit.
 
-The `fill_weight` parameter (typically between 0 and 1, although values higher than 1 could be used to prioritize cluster fill even more) controls the trade-off between pure SAH optimization and triangle utilization. A value of 0 will optimize purely for SAH, resulting in best raytracing performance but potentially smaller clusters. Values between 0.5 and 0.75 typically provide a good balance of SAH quality vs triangle count.
+The `fill_weight` parameter (typically between 0 and 1, although values higher than 1 could be used to prioritize cluster fill even more) controls the trade-off between pure SAH optimization and triangle utilization. A value of 0 will optimize purely for SAH, resulting in best raytracing performance but potentially smaller clusters. Values between 0.25 and 0.75 typically provide a good balance of SAH quality vs triangle count.
+
+When the resulting meshlets are used to generate hardware-specific acceleration structures, using fast trace (e.g. `VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR`) builds results in maximum performance; if build performance is important, using `meshopt_optimizeMeshlet` can help improve ray tracing performance when using fast build (e.g. `VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR`), although the tracing performance will still be lower than with fast trace builds.
 
 ### Point cloud clusterization
 
@@ -305,7 +309,7 @@ The resulting index buffer could be used to process the points directly, or reor
 When working with clustered geometry, it can be beneficial to organize clusters into larger groups (partitions) for more efficient processing or workload distribution. This library provides an algorithm to partition clusters into groups of similar size while prioritizing locality:
 
 ```c++
-const size_t partition_size = 32;
+const size_t partition_size = 24;
 
 std::vector<unsigned int> cluster_partitions(cluster_count);
 size_t partition_count = meshopt_partitionClusters(&cluster_partitions[0], &cluster_indices[0], total_index_count,
@@ -314,9 +318,11 @@ size_t partition_count = meshopt_partitionClusters(&cluster_partitions[0], &clus
 
 The algorithm assigns each cluster to a partition, aiming for a target partition size while prioritizing topological locality (sharing vertices) and spatial locality. The resulting partitions can be used for more efficient batched processing of clusters, or for hierarchial simplification schemes similar to Nanite.
 
-If vertex positions are specified (not NULL), spatial locality will influence priority of merging clusters; otherwise, the algorithm will rely solely on topological connections.
+Two clusters are considered topologically adjacent if they reference the same indices. In some cases, it can be helpful to process the indices using `meshopt_generateShadowIndexBuffer` (or remap them manually using the remap table generated by `meshopt_generatePositionRemap`), which allows clusters to be considered adjacent even when boundary vertices have different indices due to attribute discontinuities.
 
-After partitioning, each element in the destination array contains the partition ID (ranging from 0 to the returned partition count minus 1) for the corresponding cluster. Note that the partitions may be both smaller and larger than the target size.
+If vertex positions are specified (not NULL), spatial locality will influence priority of merging clusters; otherwise, the algorithm will rely solely on topological connections and will not merge disconnected clusters into the same partition.
+
+After partitioning, each element in the destination array contains the partition ID (ranging from 0 to the returned partition count minus 1) for the corresponding cluster. Note that the partitions may be both smaller and larger than the target size; given a target size, the maximum partition size returned currently is `target + target / 3`.
 
 ## Mesh compression
 
@@ -481,6 +487,8 @@ lod.resize(meshopt_simplifyWithAttributes(&lod[0], indices, index_count, &vertic
 
 The attributes are passed as a separate buffer (in the example above it's a subset of the same vertex buffer) and should be stored as consecutive floats; attribute weights are used to control the importance of each attribute in the simplification process. For normalized attributes like normals and vertex colors, a weight around 1.0 is usually appropriate; internally, a change of `1/weight` in attribute value over a distance `d` is approximately equivalent to a change of `d` in position. Using higher weights may be appropriate to preserve attribute quality at the cost of position quality. If the attribute has a different scale (e.g. unnormalized vertex colors in [0..255] range), the weight should be divided by the scaling factor (1/255 in this example).
 
+Including texture coordinates in the attribute set is optional, as simplification generally preserves texture quality reasonably well by default; if included, a weight of around 10-100 is usually appropriate depending on the UV density. It's also possible to compute the weight automatically by setting it to the reciprocal average density of UVs, which can be computed as `1/sqrt(average UV area)` = `1/sqrt(sum(abs(uv area)) / triangle count)` over all triangles in the mesh , possibly scaled by a constant factor if necessary.
+
 Both the target error and the resulting error combine positional error and attribute error, so the error can be used to control the LOD while taking attribute quality into account, assuming carefully chosen weights.
 
 ### Permissive simplification
@@ -531,7 +539,7 @@ Unlike `meshopt_simplify`/`meshopt_simplifyWithAttributes`, this function update
 
 Since the vertex positions are updated, this may require updating some attributes that could previously be left as-is when using the original vertex buffer. Notably, texture coordinates need to be updated to avoid texture distortion; thus it's highly recommended to include texture coordinates in the attribute data passed to the simplifier. For attributes to be updated, the corresponding attribute weight must not be zero; for texture coordinates, a weight of 1.0 is usually sufficient in this case (although a higher or mesh dependent weight could be used with this function or other functions to reduce UV stretching).
 
-Attributes that have specific constraints like normals and colors should be renormalized or clamped after the function returns new data. Attributes like bone indices/weights don't need to be updated for reasonable results (but regularization via `meshopt_SimplifyRegularize` may still be helpful to maintain deformation quality).
+Attributes that have specific constraints like normals and colors should be renormalized or clamped after the function returns new data. Attributes like bone indices/weights don't have to be updated for reasonable results (but regularization via `meshopt_SimplifyRegularize` may still be helpful to maintain deformation quality). If bone weights *are* provided as attributes, they will need to be clamped and renormalized after the update to ensure they continue to add up to 1.
 
 Using unique vertex data for each LOD in a chain can improve visual quality, but it comes at a cost of ~doubling vertex memory used (if each LOD is using half the triangles of the previous LOD). To reduce the memory footprint, it is possible to use shared vertices with `meshopt_simplifyWithAttributes` for the first one or two LODs in the chain, and only switch to `meshopt_simplifyWithUpdate` for the remainder. In that case, similarly to the use of `meshopt_simplify` described earlier, care must be taken to optimally arrange the vertices in the original vertex buffer.
 
@@ -711,11 +719,6 @@ Applications may configure the library to change the attributes of experimental 
 
 Currently, the following APIs are experimental:
 
-- `meshopt_decodeFilterColor`
-- `meshopt_encodeFilterColor`
-- `meshopt_generatePositionRemap`
-- `meshopt_simplifyWithUpdate`
-- `meshopt_SimplifyRegularize` flag for `meshopt_simplify*` functions
 - `meshopt_SimplifyPermissive` mode for `meshopt_simplify*` functions (and associated `meshopt_SimplifyVertex_*` flags)
 
 ## License
