@@ -19,7 +19,7 @@
 #endif
 
 // MSVC supports compiling SSSE3 code regardless of compile options; we use a cpuid-based scalar fallback
-#if !defined(SIMD_SSE) && !defined(SIMD_AVX) && defined(_MSC_VER) && !defined(__clang__) && (defined(_M_IX86) || defined(_M_X64))
+#if !defined(SIMD_SSE) && !defined(SIMD_AVX) && defined(_MSC_VER) && !defined(__clang__) && (defined(_M_IX86) || (defined(_M_X64) && !defined(_M_ARM64EC)))
 #define SIMD_SSE
 #define SIMD_FALLBACK
 #endif
@@ -37,7 +37,7 @@
 #endif
 
 // On MSVC, we assume that ARM builds always target NEON-capable devices
-#if !defined(SIMD_NEON) && defined(_MSC_VER) && (defined(_M_ARM) || defined(_M_ARM64))
+#if !defined(SIMD_NEON) && defined(_MSC_VER) && (defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC))
 #define SIMD_NEON
 #endif
 
@@ -56,7 +56,7 @@
 
 // When targeting AArch64/x64, optimize for latency to allow decoding of individual 16-byte groups to overlap
 // We don't do this for 32-bit systems because we need 64-bit math for this and this will hurt in-order CPUs
-#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
 #define SIMD_LATENCYOPT
 #endif
 
@@ -816,6 +816,12 @@ inline __m128i decodeShuffleMask(unsigned char mask0, unsigned char mask1)
 	return _mm_unpacklo_epi64(sm0, sm1r);
 }
 
+#ifdef __GNUC__
+typedef int __attribute__((aligned(1))) unaligned_int;
+#else
+typedef int unaligned_int;
+#endif
+
 SIMD_TARGET
 inline const unsigned char* decodeBytesGroupSimd(const unsigned char* data, unsigned char* buffer, int hbits)
 {
@@ -834,12 +840,6 @@ inline const unsigned char* decodeBytesGroupSimd(const unsigned char* data, unsi
 	case 1:
 	case 6:
 	{
-#ifdef __GNUC__
-		typedef int __attribute__((aligned(1))) unaligned_int;
-#else
-		typedef int unaligned_int;
-#endif
-
 #ifdef SIMD_LATENCYOPT
 		unsigned int data32;
 		memcpy(&data32, data, 4);

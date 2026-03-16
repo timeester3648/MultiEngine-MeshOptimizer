@@ -54,7 +54,7 @@ WASM_ENCODER_EXPORTS=meshopt_encodeVertexBuffer meshopt_encodeVertexBufferBound 
 WASM_SIMPLIFIER_SOURCES=src/simplifier.cpp src/vfetchoptimizer.cpp src/indexgenerator.cpp tools/wasmstubs.cpp
 WASM_SIMPLIFIER_EXPORTS=meshopt_simplify meshopt_simplifyWithAttributes meshopt_simplifyWithUpdate meshopt_simplifyScale meshopt_simplifyPoints meshopt_simplifySloppy meshopt_simplifyPrune meshopt_optimizeVertexFetchRemap meshopt_generatePositionRemap sbrk __wasm_call_ctors
 
-WASM_CLUSTERIZER_SOURCES=src/clusterizer.cpp tools/wasmstubs.cpp
+WASM_CLUSTERIZER_SOURCES=src/clusterizer.cpp src/meshletutils.cpp tools/wasmstubs.cpp
 WASM_CLUSTERIZER_EXPORTS=meshopt_buildMeshletsBound meshopt_buildMeshletsFlex meshopt_buildMeshletsSpatial meshopt_computeClusterBounds meshopt_computeMeshletBounds meshopt_computeSphereBounds meshopt_optimizeMeshlet sbrk __wasm_call_ctors
 
 ifneq ($(werror),)
@@ -84,6 +84,10 @@ endif
 ifeq ($(config),coverage)
 	CXXFLAGS+=-coverage
 	LDFLAGS+=-coverage
+endif
+
+ifeq ($(config),release-avx)
+	CXXFLAGS+=-O3 -DNDEBUG -mavx
 endif
 
 ifeq ($(config),release-avx512)
@@ -227,10 +231,10 @@ codecbench-simd.wasm: tools/codecbench.cpp $(LIBRARY_SOURCES)
 codectest: tools/codectest.cpp $(LIBRARY)
 	$(CXX) $^ $(CXXFLAGS) $(LDFLAGS) -o $@
 
-codecfuzz: tools/codecfuzz.cpp src/vertexcodec.cpp src/indexcodec.cpp
+codecfuzz: tools/codecfuzz.cpp src/vertexcodec.cpp src/indexcodec.cpp src/meshletcodec.cpp
 	$(CXX) $^ -fsanitize=fuzzer,address,undefined -O1 -g -o $@
 
-clusterfuzz: tools/clusterfuzz.cpp src/clusterizer.cpp
+clusterfuzz: tools/clusterfuzz.cpp src/clusterizer.cpp src/partition.cpp
 	$(CXX) $^ -fsanitize=fuzzer,address,undefined -O1 -g -o $@
 
 simplifyfuzz: tools/simplifyfuzz.cpp src/simplifier.cpp

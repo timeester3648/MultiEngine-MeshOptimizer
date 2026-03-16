@@ -32,6 +32,9 @@ set(SOURCES
     src/indexanalyzer.cpp
     src/indexcodec.cpp
     src/indexgenerator.cpp
+    src/meshletcodec.cpp
+    src/meshletutils.cpp
+    src/opacitymap.cpp
     src/overdrawoptimizer.cpp
     src/partition.cpp
     src/quantization.cpp
