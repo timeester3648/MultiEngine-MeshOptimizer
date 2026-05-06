@@ -222,6 +222,11 @@ static void dispatchSimd(void (*process)(T*, size_t), T* data, size_t count, siz
 	size_t count4 = count & ~size_t(3);
 	process(data, count4);
 
+#ifdef MESHOPTIMIZER_VERTEXFILTER_SIMDNOTAIL
+	// optionally omit tail processing to improve code size, expecting the caller to pass aligned counts
+	assert(count4 == count);
+	(void)stride;
+#else
 	if (count4 < count)
 	{
 		T tail[4 * 4] = {}; // max stride 4, max count 4
@@ -232,6 +237,7 @@ static void dispatchSimd(void (*process)(T*, size_t), T* data, size_t count, siz
 		process(tail, count - count4);
 		memcpy(data + count4 * stride, tail, tail_size);
 	}
+#endif
 }
 
 inline uint64_t rotateleft64(uint64_t v, int x)
@@ -919,8 +925,7 @@ static void decodeFilterOctSimd8(signed char* data, size_t count)
 static void decodeFilterOctSimd16(short* data, size_t count)
 {
 	const v128_t sign = wasm_f32x4_splat(-0.f);
-	// TODO: volatile here works around LLVM mis-optimizing code; https://github.com/llvm/llvm-project/issues/149457
-	volatile v128_t zmask = wasm_i32x4_splat(0x7fff);
+	const v128_t zmask = wasm_i32x4_splat(0x7fff);
 
 	for (size_t i = 0; i < count; i += 4)
 	{
@@ -1069,9 +1074,6 @@ static void decodeFilterExpSimd(unsigned int* data, size_t count)
 
 static void decodeFilterColorSimd8(unsigned char* data, size_t count)
 {
-	// TODO: volatile here works around LLVM mis-optimizing code; https://github.com/llvm/llvm-project/issues/149457
-	volatile v128_t zero = wasm_i32x4_splat(0);
-
 	for (size_t i = 0; i < count; i += 4)
 	{
 		v128_t c4 = wasm_v128_load(&data[i * 4]);
@@ -1080,7 +1082,7 @@ static void decodeFilterColorSimd8(unsigned char* data, size_t count)
 		v128_t yf = wasm_v128_and(c4, wasm_i32x4_splat(0xff));
 		v128_t cof = wasm_i32x4_shr(wasm_i32x4_shl(c4, 16), 24);
 		v128_t cgf = wasm_i32x4_shr(wasm_i32x4_shl(c4, 8), 24);
-		v128_t af = wasm_v128_or(zero, wasm_u32x4_shr(c4, 24));
+		v128_t af = wasm_u32x4_shr(c4, 24);
 
 		// recover scale from alpha high bit
 		v128_t as = af;
@@ -1120,9 +1122,6 @@ static void decodeFilterColorSimd8(unsigned char* data, size_t count)
 
 static void decodeFilterColorSimd16(unsigned short* data, size_t count)
 {
-	// TODO: volatile here works around LLVM mis-optimizing code; https://github.com/llvm/llvm-project/issues/149457
-	volatile v128_t zero = wasm_i32x4_splat(0);
-
 	for (size_t i = 0; i < count; i += 4)
 	{
 		v128_t c4_0 = wasm_v128_load(&data[(i + 0) * 4]);
@@ -1136,7 +1135,7 @@ static void decodeFilterColorSimd16(unsigned short* data, size_t count)
 		v128_t yf = wasm_v128_and(c4_yco, wasm_i32x4_splat(0xffff));
 		v128_t cof = wasm_i32x4_shr(c4_yco, 16);
 		v128_t cgf = wasm_i32x4_shr(wasm_i32x4_shl(c4_cga, 16), 16);
-		v128_t af = wasm_v128_or(zero, wasm_u32x4_shr(c4_cga, 16));
+		v128_t af = wasm_u32x4_shr(c4_cga, 16);
 
 		// recover scale from alpha high bit
 		v128_t as = af;

@@ -13,10 +13,10 @@ Two companion projects are developed and distributed alongside the library: [glt
 meshoptimizer is hosted on GitHub; you can download the latest release using git:
 
 ```
-git clone -b v1.0 https://github.com/zeux/meshoptimizer.git
+git clone -b v1.1 https://github.com/zeux/meshoptimizer.git
 ```
 
-Alternatively you can [download the .zip archive from GitHub](https://github.com/zeux/meshoptimizer/archive/v1.0.zip).
+Alternatively you can [download the .zip archive from GitHub](https://github.com/zeux/meshoptimizer/archive/v1.1.zip).
 
 The library is also available as a Linux package in several distributions ([ArchLinux](https://aur.archlinux.org/packages/meshoptimizer/), [Debian](https://packages.debian.org/libmeshoptimizer), [FreeBSD](https://www.freshports.org/misc/meshoptimizer/), [Nix](https://mynixos.com/nixpkgs/package/meshoptimizer), [Ubuntu](https://packages.ubuntu.com/libmeshoptimizer)), as well as a [Vcpkg port](https://github.com/microsoft/vcpkg/tree/master/ports/meshoptimizer) (see [installation instructions](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started)) and a [Conan package](https://conan.io/center/recipes/meshoptimizer).
 
@@ -429,13 +429,11 @@ Decoder is heavily optimized and can directly target write-combined memory; you 
 
 > Applications that do most of the streaming decompression on the GPU can also decode meshlet data on the GPU if CPU decoding is inconvenient; an example [meshletdec.slang](./demo/meshletdec.slang) shader is provided for 32-bit output format, and can be easily adapted to other formats, including custom ones.
 
-Note that meshlet encoding assumes that the meshlet data was optimized; meshlets should be processed using `meshopt_optimizeMeshlet` before encoding. Additionally, vertex references should have a high degree of reference locality; this can be achieved by building meshlets from meshes optimized for vertex cache/fetch, or linearizing the vertex reference data (and reordering the vertex buffer accordingly). Feeding unoptimized data into the encoder will result in poor compression ratios. Codec preserves the order of triangles, however it can rotate each triangle to improve compression ratio (which means the provoking vertex may change).
+Note that meshlet encoding assumes that the meshlet data was optimized; meshlets should be processed using `meshopt_optimizeMeshletLevel` with level 1 or higher (3 recommended for improved compression) before encoding. Additionally, vertex references should have a high degree of reference locality; this can be achieved by building meshlets from meshes optimized for vertex cache/fetch, or linearizing the vertex reference data and reordering the vertex buffer using `meshopt_optimizeVertexFetch`. Feeding unoptimized data into the encoder will result in poor compression ratios. Codec preserves the order of triangles, however it can rotate each triangle to improve compression ratio (which means the provoking vertex may change).
 
 Meshlets without vertex references are supported; passing `NULL` vertices and `0` vertex count during encoding and decoding will produce encoded meshlets with just triangle data. Note that parameters supplied during decoding must match those used during encoding; if a meshlet was encoded with vertex references, it must be decoded with the same number of vertex references.
 
 The meshlet codec targets 5-7 bits per triangle for triangle data; when vertex references are encoded, the encoded size strongly depends on how linear the references are, but it's typical to see 9-12 bits per triangle in aggregate. To reduce the compressed size further, it's possible to compress the resulting encoded data with a general purpose compressor, which usually achieves 5-8 bits/triangle in aggregate; note that in this case general purpose compressors should be applied to a stream with many encoded meshlets at once to amortize their overhead.
-
-> Note: this codec is currently experimental and the data format and APIs are subject to change.
 
 ### Point cloud compression
 
@@ -565,8 +563,6 @@ for (size_t i = 0; i < vertices.size(); ++i) {
 
 This approach provides fine-grained control over which discontinuities to preserve. The permissive mode combined with selective locking provides a balance between simplification quality and attribute preservation, and usually results in higher quality LODs for the same target triangle count (and dramatically higher quality compared to `meshopt_simplifySloppy`).
 
-> Note: this functionality is currently experimental and is subject to future improvements. Certain collapses are restricted to protect the overall topology, and attribute quality may occasionally regress.
-
 ### Simplification with vertex update
 
 All simplification functions described so far reuse the original vertex buffer and only produce a new index buffer. This means that the resulting mesh will have the same vertex positions and attributes as the original mesh; this is optimal for minimizing the memory consumption and for highly detailed meshes often provides good quality. However, for more aggressive simplification to retain visual quality, it may be necessary to adjust vertex data for optimal appearance. This can be done by using a variant of the simplification function that updates vertex positions and attributes, `meshopt_simplifyWithUpdate`:
@@ -595,10 +591,12 @@ For basic customization, a number of options can be passed via `options` bitmask
 - `meshopt_SimplifyErrorAbsolute` changes the error metric from relative to absolute both for the input error limit as well as for the resulting error. This can be used instead of `meshopt_simplifyScale`.
 - `meshopt_SimplifySparse` improves simplification performance assuming input indices are a sparse subset of the mesh. This can be useful when simplifying small mesh subsets independently, and is intended to be used for meshlet simplification. For consistency, it is recommended to use absolute errors when sparse simplification is desired, as this flag changes the meaning of the relative errors.
 - `meshopt_SimplifyPrune` allows the simplifier to remove isolated components regardless of the topological restrictions inside the component. This is generally recommended for full-mesh simplification as it can improve quality and reduce triangle count; note that with this option, triangles connected to locked vertices may be removed as part of their component.
-- `meshopt_SimplifyRegularize` produces more regular triangle sizes and shapes during simplification, at some cost to geometric quality. This can improve geometric quality under deformation such as skinning.
+- `meshopt_SimplifyRegularize` produces more regular triangle sizes and shapes during simplification, at some cost to geometric quality. This can improve geometric quality under deformation such as skinning. `meshopt_SimplifyRegularizeLight` can be used instead of this flag to use a smaller regularization factor, reducing the impact on geometric quality.
 - `meshopt_SimplifyPermissive` allows collapses across attribute discontinuities, except for vertices that are tagged with `meshopt_SimplifyVertex_Protect` via `vertex_lock`.
 
 When using `meshopt_simplifyWithAttributes`, it is also possible to lock certain vertices by providing a `vertex_lock` array that contains a value for each vertex in the mesh, with `meshopt_SimplifyVertex_Lock` set for vertices that should not be collapsed. This can be useful to preserve certain vertices, such as the boundary of the mesh, with more control than `meshopt_SimplifyLockBorder` option provides. When using `meshopt_simplifyWithUpdate`, locking vertices (whether via `vertex_lock` or `meshopt_SimplifyLockBorder`) will also prevent the simplifier from updating their positions and attributes; this can be useful together with `meshopt_SimplifySparse` for meshlet simplification, as meshlets at one level of hierarchy can be simplified together without excessive data copying.
+
+Locking vertices restricts simplification and makes it more likely that the simplifier gets stuck before reaching the index target; if some areas of the mesh are more important than others but should still be eligible for simplification, `vertex_lock` array can be used to mark specific vertices as high priority using `meshopt_SimplifyVertex_Priority` bit, which makes it more likely that the vertex will be preserved during simplification.
 
 In addition to the `meshopt_SimplifyPrune` flag, you can explicitly prune isolated components by calling the `meshopt_simplifyPrune` function. This can be done before regular simplification or as the only step, which is useful for scenarios like isosurface cleanup. Similar to other simplification functions, the `target_error` argument controls the cutoff of component radius and is specified in relative units (e.g., `1e-2f` will remove components under 1%). If an absolute cutoff is desired, divide the parameter by the factor returned by `meshopt_simplifyScale`.
 
@@ -783,7 +781,7 @@ for (size_t i = 0; i < omm_count; ++i)
 }
 ```
 
-> Note: Opacity micromap data is sensitive to triangle corner order. If index or meshlet compression is used, to match runtime order the index data should be decompressed from the compressed representation first. Since per-triangle OMM indices use the original triangle order, it's recommended to perform OMM processing after the index order has been finalized.
+> Note: Opacity micromap data is sensitive to triangle corner order, which index or meshlet compression can change. If compression is used, index data should be decompressed from the compressed representation before rasterization, or order should be normalized before rasterization as well as after decompression (e.g. by rotating each triangle so that `a < b, c`). Since per-triangle OMM indices use the original triangle order, it's recommended to perform OMM processing after the index order has been finalized.
 
 After rasterization, the OMM data *can* be used as is; however, it's typical to see redundant entries that either can be reused between different triangles, or that have consistent states for all micro-triangles, which can be represented using "special" indices (-4..-1) per triangle. Thus it's recommended to compact the data - if it's already laid out sequentially similarly to the example above, then just calling `meshopt_opacityMapCompact` and trimming the output arrays is sufficient for optimal output:
 
@@ -797,6 +795,52 @@ After compaction, `levels` and `offsets` (`omm_count` entries) and `data` (`data
 Additionally, note that while the code above works with 32-bit OMM indices, after compaction it's typical to see each mesh refer to a small section of OMM array data which can be represented using 16-bit (or, sometimes, 8-bit indices). The index data can be narrowed to a shorter type in these cases; note that when using 16-bit OMM index data, due to special indices, the index values should be in range `[0..65531]` (and `[0..251]` for 8-bit indices, assuming 4-state OMMs are used).
 
 When using 4-state OMMs, rasterization code produces both unknown-transparent and unknown-opaque states based on microtriangle coverage; this enables the use of forced 2-state flag during traversal for specific effects where micromap data is sufficient for reasonable quality; this is recommended for performance as this results in no any-hit invocations.
+
+### Tangent spaces
+
+Meshes that use tangent space normal maps often require per-vertex tangent vectors in addition to normals. These could be exported alongside mesh data, but this library also provides an algorithm similar to MikkTSpace that can generate them from positions, normals and texture coordinates:
+
+```c++
+std::vector<vec4> tangents(indices.size());
+meshopt_generateTangents(&tangents[0].x, &indices[0], indices.size(),
+    &vertices[0].px, vertices.size(), sizeof(Vertex), &vertices[0].nx, sizeof(Vertex), &vertices[0].tx, sizeof(Vertex));
+```
+
+For each triangle *corner* this writes a normalized tangent vector (xyz) and an orientation sign (+-1); the bitangent can be reconstructed in the shader as `cross(normal, tangent.xyz) * tangent.w`. Note that some coordinate space conventions that flip V direction in the texture space require negating orientation sign. The input can be indexed, as in the example above, or not (`indices=NULL`); this does not affect the output tangents.
+
+Because tangents are computed per corner, applying them to mesh vertices requires de-indexing the mesh and generating a new index/vertex buffer afterwards (see `Indexing` section earlier), or using indexed data and copying tangents to existing vertex data while duplicating vertices with different tangents (see `tangents` example in `demo/main.cpp`). With the indexed input, if it contains UV mirroring, vertices along the mirror edge may have different tangent spaces on different sides of the edge and need to be split - copying tangents to existing vertex data without splitting will not produce correct results.
+
+If splitting is required, it can be efficiently done with an extra pass and an index list per vertex:
+
+```c++
+// seed each vertex with one of its corner tangents; the loop below fixes any mismatches
+for (size_t i = 0; i < indices.size(); ++i)
+    vertices[indices[i]].tangent = tangents[i];
+
+std::vector<unsigned int> splits(vertices.size(), ~0u);
+
+for (size_t i = 0; i < indices.size(); ++i)
+{
+    // walk the chain of split copies looking for a vertex whose tangent matches
+    unsigned int v = indices[i];
+    while (v != ~0u && vertices[v].tangent != tangents[i])
+        v = splits[v];
+
+    // no match in chain: append a new split copy with the target tangent and chain it
+    if (v == ~0u)
+    {
+        v = unsigned(vertices.size());
+        vertices.push_back(vertices[indices[i]]);
+        vertices[v].tangent = tangents[i];
+        splits.push_back(splits[indices[i]]);
+        splits[indices[i]] = v;
+    }
+
+    indices[i] = v;
+}
+```
+
+The algorithm uses a MikkTSpace-like construction but by default, uses a modified weighting scheme that significantly improves tangent quality around beveled regions in the mesh. If the normal maps are baked from higher resolution geometry using MikkTSpace weighting, it's possible to produce MikkTSpace-compatible tangents by passing `meshopt_TangentCompatible` option as an extra argument to the function.
 
 ## Memory management
 
@@ -824,11 +868,13 @@ Applications may configure the library to change the attributes of experimental 
 
 Currently, the following APIs are experimental:
 
-- `meshopt_SimplifyPermissive` mode for `meshopt_simplify*` functions (and associated `meshopt_SimplifyVertex_*` flags)
-- `meshopt_encodeMeshlet` and `meshopt_encodeMeshletBound` functions
-- `meshopt_decodeMeshlet` and `meshopt_decodeMeshletRaw` functions
-- `meshopt_extractMeshletIndices` function
+- `meshopt_SimplifyPermissive` mode for `meshopt_simplify*` functions
+- `meshopt_SimplifyVertex_Priority` flag for `vertex_lock` parameter to `meshopt_simplify*` functions
+- `meshopt_SimplifyRegularizeLight` flag for `meshopt_simplify*` functions
+- `meshopt_encode/decodeMeshlet*` functions (`meshopt_encodeMeshlet`, `meshopt_encodeMeshletBound`, `meshopt_decodeMeshlet`, `meshopt_decodeMeshletRaw`)
+- `meshopt_extractMeshletIndices` and `meshopt_optimizeMeshletLevel` functions
 - `meshopt_opacityMap*` functions (`meshopt_opacityMapMeasure`, `meshopt_opacityMapRasterize`, `meshopt_opacityMapCompact`, `meshopt_opacityMapEntrySize`)
+- `meshopt_generateTangents` function and `meshopt_Tangent*` flags
 
 ## License
 

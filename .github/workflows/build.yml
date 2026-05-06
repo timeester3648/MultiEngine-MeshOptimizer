@@ -89,6 +89,8 @@ jobs:
         run: node js/meshopt_simplifier.test.js
       - name: test clusterizer
         run: node js/meshopt_clusterizer.test.js
+      - name: check typescript declarations
+        run: npx --yes -p typescript@6 tsc --noEmit --moduleResolution node16 --module node16 --strict js/index.d.ts
       - name: check es5
         run: |
           npm install -g es-check@7.2.1
@@ -130,7 +132,7 @@ jobs:
           curl -sL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-$VERSION/wasi-sdk-$VERSION.0-x86_64-linux.deb > wasi-sdk.deb
           sudo dpkg -i wasi-sdk.deb
         env:
-          VERSION: 25
+          VERSION: 32
       - name: build
         run: |
           make -j2 -B gltf/library.wasm js
@@ -205,6 +207,7 @@ jobs:
           ./gltfpack -test glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf -tc -ts 0.5 -tl 64
           ./gltfpack -test glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf -tc color -tfy -tq 4 -tj 1
           ./gltfpack -test glTF-Sample-Assets/Models/CesiumMan/glTF/CesiumMan.gltf -tu -ts 0.6 -tp -ar 0
+          ./gltfpack -test glTF-Sample-Assets/Models/CesiumMan/glTF/CesiumMan.gltf -gt -kv
           ./gltfpack -test glTF-Sample-Assets/Models/PrimitiveModeNormalsTest/glTF/PrimitiveModeNormalsTest.gltf -si 0.5
           ./gltfpack -test glTF-Sample-Assets/Models/VertexColorTest/glTF/VertexColorTest.gltf -si 0.5 -vc 12
           ./gltfpack -test glTF-Sample-Assets/Models/SimpleMeshes/glTF/SimpleMeshes.gltf -mm

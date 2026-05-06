@@ -37,7 +37,7 @@ WASI_SDK?=/opt/wasi-sdk
 WASMCC?=$(WASI_SDK)/bin/clang++
 WASIROOT?=$(WASI_SDK)/share/wasi-sysroot
 
-WASM_FLAGS=--target=wasm32-wasi --sysroot=$(WASIROOT)
+WASM_FLAGS=--target=wasm32-wasi -Wno-deprecated --sysroot=$(WASIROOT) --no-wasm-opt
 WASM_FLAGS+=-Wall -Wextra
 WASM_FLAGS+=-O3 -DNDEBUG -nostartfiles -nostdlib -Wl,--no-entry -Wl,-s
 WASM_FLAGS+=-mcpu=mvp # make sure clang doesn't use post-MVP features like sign extension
@@ -56,6 +56,9 @@ WASM_SIMPLIFIER_EXPORTS=meshopt_simplify meshopt_simplifyWithAttributes meshopt_
 
 WASM_CLUSTERIZER_SOURCES=src/clusterizer.cpp src/meshletutils.cpp tools/wasmstubs.cpp
 WASM_CLUSTERIZER_EXPORTS=meshopt_buildMeshletsBound meshopt_buildMeshletsFlex meshopt_buildMeshletsSpatial meshopt_computeClusterBounds meshopt_computeMeshletBounds meshopt_computeSphereBounds meshopt_optimizeMeshlet sbrk __wasm_call_ctors
+
+WASM_TANGENTS_SOURCES=src/tangentspace.cpp tools/wasmstubs.cpp
+WASM_TANGENTS_EXPORTS=meshopt_generateTangents sbrk __wasm_call_ctors
 
 ifneq ($(werror),)
 	CFLAGS+=-Werror
@@ -141,7 +144,7 @@ format:
 formatjs:
 	prettier -w js/*.js gltf/*.js demo/*.html js/*.ts
 
-js: js/meshopt_decoder.cjs js/meshopt_decoder.mjs js/meshopt_encoder.js js/meshopt_simplifier.js js/meshopt_clusterizer.js
+js: js/meshopt_decoder.cjs js/meshopt_decoder.mjs js/meshopt_encoder.js js/meshopt_simplifier.js js/meshopt_clusterizer.js js/meshopt_tangents.js
 
 symbols: $(BUILD)/amalgamated.so
 	nm $< -U -g
@@ -163,7 +166,7 @@ $(BUILD)/gltfpack: $(GLTFPACK_OBJECTS) $(LIBRARY)
 gltfpack.wasm: gltf/library.wasm
 
 gltf/library.wasm: $(LIBRARY_SOURCES) $(GLTFPACK_SOURCES)
-	$(WASMCC) $^ -o $@ -Wall -Os -DNDEBUG --target=wasm32-wasi --sysroot=$(WASIROOT) -nostartfiles -Wl,--no-entry -Wl,--export=pack -Wl,--export=malloc -Wl,--export=free -Wl,--export=__wasm_call_ctors -Wl,-s -Wl,--allow-undefined-file=gltf/wasistubs.txt
+	$(WASMCC) $^ -o $@ -Wall -Os -DNDEBUG --target=wasm32-wasi -Wno-deprecated --sysroot=$(WASIROOT) -nostartfiles --no-wasm-opt -Wl,--no-entry -Wl,--export=pack -Wl,--export=malloc -Wl,--export=free -Wl,--export=__wasm_call_ctors -Wl,-s -Wl,--allow-undefined-file=gltf/wasistubs.txt
 
 build/decoder_base.wasm: $(WASM_DECODER_SOURCES)
 	@mkdir -p build
@@ -171,7 +174,7 @@ build/decoder_base.wasm: $(WASM_DECODER_SOURCES)
 
 build/decoder_simd.wasm: $(WASM_DECODER_SOURCES)
 	@mkdir -p build
-	$(WASMCC) $^ $(WASM_FLAGS) $(patsubst %,$(WASM_EXPORT_PREFIX)=%,$(WASM_DECODER_EXPORTS)) -o $@ -msimd128 -mbulk-memory
+	$(WASMCC) $^ $(WASM_FLAGS) $(patsubst %,$(WASM_EXPORT_PREFIX)=%,$(WASM_DECODER_EXPORTS)) -o $@ -msimd128 -mbulk-memory -DMESHOPTIMIZER_VERTEXFILTER_SIMDNOTAIL
 
 build/encoder.wasm: $(WASM_ENCODER_SOURCES)
 	@mkdir -p build
@@ -185,6 +188,10 @@ build/clusterizer.wasm: $(WASM_CLUSTERIZER_SOURCES)
 	@mkdir -p build
 	$(WASMCC) $^ $(WASM_FLAGS) $(patsubst %,$(WASM_EXPORT_PREFIX)=%,$(WASM_CLUSTERIZER_EXPORTS)) -lc -o $@
 
+build/tangents.wasm: $(WASM_TANGENTS_SOURCES)
+	@mkdir -p build
+	$(WASMCC) $^ $(WASM_FLAGS) $(patsubst %,$(WASM_EXPORT_PREFIX)=%,$(WASM_TANGENTS_EXPORTS)) -lc -o $@
+
 js/meshopt_decoder.mjs: build/decoder_base.wasm build/decoder_simd.wasm tools/wasmpack.py
 	sed -i "s#Built with clang.*#Built with $$($(WASMCC) --version | head -n 1 | sed 's/\s\+(.*//')#" $@
 	sed -i "s#Built from meshoptimizer .*#Built from meshoptimizer $$(cat src/meshoptimizer.h | grep -Po '(?<=version )[0-9.]+')#" $@
@@ -194,8 +201,9 @@ js/meshopt_decoder.mjs: build/decoder_base.wasm build/decoder_simd.wasm tools/wa
 js/meshopt_encoder.js: build/encoder.wasm tools/wasmpack.py
 js/meshopt_simplifier.js: build/simplifier.wasm tools/wasmpack.py
 js/meshopt_clusterizer.js: build/clusterizer.wasm tools/wasmpack.py
+js/meshopt_tangents.js: build/tangents.wasm tools/wasmpack.py
 
-js/meshopt_encoder.js js/meshopt_simplifier.js js/meshopt_clusterizer.js:
+js/meshopt_encoder.js js/meshopt_simplifier.js js/meshopt_clusterizer.js js/meshopt_tangents.js:
 	sed -i "s#Built with clang.*#Built with $$($(WASMCC) --version | head -n 1 | sed 's/\s\+(.*//')#" $@
 	sed -i "s#Built from meshoptimizer .*#Built from meshoptimizer $$(cat src/meshoptimizer.h | grep -Po '(?<=version )[0-9.]+')#" $@
 	python3 tools/wasmpack.py patch $@ wasm <$<

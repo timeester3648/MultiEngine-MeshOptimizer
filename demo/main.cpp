@@ -788,7 +788,7 @@ static void validateDecodeMeshlet(const unsigned char* data, size_t size, const 
 	}
 }
 
-void encodeMeshlets(const Mesh& mesh, size_t max_vertices, size_t max_triangles, bool reorder = true)
+void encodeMeshlets(const Mesh& mesh, size_t max_vertices, size_t max_triangles, bool reorder = true, int level = 3)
 {
 	size_t max_meshlets = meshopt_buildMeshletsBound(mesh.indices.size(), max_vertices, max_triangles);
 	std::vector<meshopt_Meshlet> meshlets(max_meshlets);
@@ -804,16 +804,13 @@ void encodeMeshlets(const Mesh& mesh, size_t max_vertices, size_t max_triangles,
 		// this is an example of how to trim the vertex/triangle arrays when copying data out to GPU storage
 		meshlet_vertices.resize(last.vertex_offset + last.vertex_count);
 		meshlet_triangles.resize(last.triangle_offset + last.triangle_count * 3);
-
-		// TODO: over-allocate meshlet_vertices to multiple of 3 to make meshopt_optimizeVertexFetch below work without assertions
-		meshlet_vertices.resize((meshlet_vertices.size() + 2) / 3 * 3);
 	}
 
 	std::vector<unsigned char> cbuf(meshopt_encodeMeshletBound(max_vertices, max_triangles));
 
 	// optimize each meshlet for locality; this is important for performance, and critical for good compression
 	for (size_t i = 0; i < meshlets.size(); ++i)
-		meshopt_optimizeMeshlet(&meshlet_vertices[meshlets[i].vertex_offset], &meshlet_triangles[meshlets[i].triangle_offset], meshlets[i].triangle_count, meshlets[i].vertex_count);
+		meshopt_optimizeMeshletLevel(&meshlet_vertices[meshlets[i].vertex_offset], meshlets[i].vertex_count, &meshlet_triangles[meshlets[i].triangle_offset], meshlets[i].triangle_count, level);
 
 	// optimize the order of vertex references within each meshlet and globally; this is valuable for access locality and critical for compression of vertex references
 	// note that this reorders the vertex buffer too, so if a traditional index buffer is required it would need to be reconstructed from the meshlet data for optimal locality
@@ -1391,6 +1388,77 @@ void coverage(const Mesh& mesh)
 	    cs.coverage[0] * 100, cs.coverage[1] * 100, cs.coverage[2] * 100, (end - start) * 1000);
 }
 
+struct VertexTangent
+{
+	float px, py, pz;
+	float nx, ny, nz;
+	float tu, tv;
+	float tx, ty, tz, tw;
+};
+
+void tangents(const Mesh& mesh)
+{
+	double start = timestamp();
+
+	// note: tangent generation produces a tangent vector and orientation (+-1) per *corner* (3 per triangle), even for indexed inputs
+	// you *could* then copy the tangents to the existing vertices, but that will not work correctly in case the input has UV mirroring
+	// a simple way to handle this is to work on unindexed data (indices==NULL), generate tangents, and re-index
+	// we show a more involved way that splits vertices with divergent tangents on the fly.
+	std::vector<float> tangents(mesh.indices.size() * 4);
+
+	meshopt_generateTangents(&tangents[0], &mesh.indices[0], mesh.indices.size(), &mesh.vertices[0].px, mesh.vertices.size(), sizeof(Vertex), &mesh.vertices[0].nx, sizeof(Vertex), &mesh.vertices[0].tx, sizeof(Vertex));
+
+	std::vector<VertexTangent> newvertices(mesh.vertices.size());
+	std::vector<unsigned int> newindices = mesh.indices;
+
+	// copy positions/normals/UVs (Vertex has no tangent field, so we use VertexTangent)
+	for (size_t i = 0; i < mesh.vertices.size(); ++i)
+	{
+		VertexTangent& vt = newvertices[i];
+		const Vertex& v = mesh.vertices[i];
+
+		vt.px = v.px, vt.py = v.py, vt.pz = v.pz;
+		vt.nx = v.nx, vt.ny = v.ny, vt.nz = v.nz;
+		vt.tu = v.tx, vt.tv = v.ty;
+	}
+
+	// seed each vertex with one of its corner tangents; the loop below fixes any mismatches
+	for (size_t i = 0; i < mesh.indices.size(); ++i)
+	{
+		VertexTangent& vt = newvertices[mesh.indices[i]];
+		const float* t = &tangents[i * 4];
+		vt.tx = t[0], vt.ty = t[1], vt.tz = t[2], vt.tw = t[3];
+	}
+
+	std::vector<unsigned int> splits(mesh.vertices.size(), ~0u);
+
+	for (size_t i = 0; i < mesh.indices.size(); ++i)
+	{
+		const float* t = &tangents[i * 4];
+		unsigned int v = mesh.indices[i];
+
+		// walk the chain of split copies looking for a vertex whose tangent matches
+		while (v != ~0u && (newvertices[v].tx != t[0] || newvertices[v].ty != t[1] || newvertices[v].tz != t[2] || newvertices[v].tw != t[3]))
+			v = splits[v];
+
+		// no match in chain: append a new split copy with the target tangent and chain it
+		if (v == ~0u)
+		{
+			v = unsigned(newvertices.size());
+			newvertices.push_back(newvertices[mesh.indices[i]]);
+			newvertices[v].tx = t[0], newvertices[v].ty = t[1], newvertices[v].tz = t[2], newvertices[v].tw = t[3];
+			splits.push_back(splits[mesh.indices[i]]);
+			splits[mesh.indices[i]] = v;
+		}
+
+		newindices[i] = v;
+	}
+
+	double end = timestamp();
+
+	printf("Tangents : %d corners, %d splits in %.2f msec\n", int(mesh.indices.size()), int(newvertices.size() - mesh.vertices.size()), (end - start) * 1000);
+}
+
 void nanite(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices); // nanite.cpp
 
 bool loadMesh(Mesh& mesh, const char* path)
@@ -1436,6 +1504,9 @@ void processDeinterleaved(const char* path)
 
 	for (unsigned int i = 0; i < obj->face_count; ++i)
 	{
+		if (obj->face_vertices[i] <= 2)
+			continue;
+
 		for (unsigned int j = 0; j < obj->face_vertices[i]; ++j)
 		{
 			fastObjIndex gi = obj->indices[index_offset + j];
@@ -1575,6 +1646,8 @@ void process(const char* path)
 	reindexFuzzy(mesh);
 	coverage(mesh);
 
+	tangents(mesh);
+
 	if (path)
 		processDeinterleaved(path);
 }
@@ -1585,9 +1658,7 @@ void processDev(const char* path)
 	if (!loadMesh(mesh, path))
 		return;
 
-	encodeMeshlets(mesh, 32, 48);
-	encodeMeshlets(mesh, 64, 64);
-	encodeMeshlets(mesh, 64, 96);
+	tangents(mesh);
 }
 
 void processNanite(const char* path)

@@ -1,5 +1,5 @@
 /**
- * meshoptimizer - version 1.0
+ * meshoptimizer - version 1.1
  *
  * Copyright (C) 2016-2026, by Arseny Kapoulkine (arseny.kapoulkine@gmail.com)
  * Report bugs and download new versions at https://github.com/zeux/meshoptimizer
@@ -12,7 +12,7 @@
 #include <stddef.h>
 
 /* Version macro; major * 1000 + minor * 10 + patch */
-#define MESHOPTIMIZER_VERSION 1000 /* 1.0 */
+#define MESHOPTIMIZER_VERSION 1010 /* 1.1 */
 
 /* If no API is defined, assume default */
 #ifndef MESHOPTIMIZER_API
@@ -300,7 +300,7 @@ MESHOPTIMIZER_API int meshopt_decodeIndexSequence(void* destination, size_t inde
  * Encodes meshlet data into an array of bytes that is generally smaller and compresses better compared to original.
  * Returns encoded data size on success, 0 on error; the only error condition is if buffer doesn't have enough space
  * This function encodes a single meshlet; when encoding multiple meshlets, additional headers may be necessary to store vertex/triangle count and encoded size.
- * For maximum efficiency the meshlet being encoded should be optimized using meshopt_optimizeMeshlet; additionally, vertex reference data should be optimized for locality (fetch).
+ * For maximum efficiency the meshlet being encoded should be optimized using meshopt_optimizeMeshletLevel with level 1+ (3 recommended); additionally, vertex reference data should be optimized for locality (fetch).
  *
  * buffer must contain enough space for the encoded meshlet (use meshopt_encodeMeshletBound to compute worst case size)
  * vertices may be NULL, in which case vertex_count must be 0 and only triangle data is encoded
@@ -454,10 +454,12 @@ enum
 	meshopt_SimplifyRegularize = 1 << 4,
 	/* Experimental: Allow collapses across attribute discontinuities, except for vertices that are tagged with meshopt_SimplifyVertex_Protect in vertex_lock. */
 	meshopt_SimplifyPermissive = 1 << 5,
+	/* Experimental: Produce more regular triangle sizes and shapes during simplification, at a small cost to geometric and attribute quality. */
+	meshopt_SimplifyRegularizeLight = 1 << 6,
 };
 
 /**
- * Experimental: Simplification vertex flags/locks, for use in `vertex_lock` arrays in simplification APIs
+ * Simplification vertex flags/locks, for use in `vertex_lock` arrays in simplification APIs
  */
 enum
 {
@@ -465,6 +467,8 @@ enum
 	meshopt_SimplifyVertex_Lock = 1 << 0,
 	/* Protect attribute discontinuity at this vertex; must be used together with meshopt_SimplifyPermissive option. */
 	meshopt_SimplifyVertex_Protect = 1 << 1,
+	/* Experimental: Increase priority for this vertex, making it more likely that it's preserved during simplification. */
+	meshopt_SimplifyVertex_Priority = 1 << 2,
 };
 
 /**
@@ -502,7 +506,7 @@ MESHOPTIMIZER_API size_t meshopt_simplify(unsigned int* destination, const unsig
  * vertex_attributes should have attribute_count floats for each vertex
  * attribute_weights should have attribute_count floats in total; the weights determine relative priority of attributes between each other and wrt position
  * attribute_count must be <= 32
- * vertex_lock can be NULL; when it's not NULL, it should have a value for each vertex; 1 denotes vertices that can't be moved
+ * vertex_lock can be NULL; when it's not NULL, it should have a value for each vertex composed of meshopt_SimplifyVertex_* flags
  * target_error represents the error relative to mesh extents that can be tolerated, e.g. 0.01 = 1% deformation; value range [0..1]
  * options must be a bitmask composed of meshopt_SimplifyX options; 0 is a safe default
  * result_error can be NULL; when it's not NULL, it will contain the resulting (relative) error after simplification
@@ -525,7 +529,7 @@ MESHOPTIMIZER_API size_t meshopt_simplifyWithAttributes(unsigned int* destinatio
  * vertex_attributes should have attribute_count floats for each vertex
  * attribute_weights should have attribute_count floats in total; the weights determine relative priority of attributes between each other and wrt position
  * attribute_count must be <= 32
- * vertex_lock can be NULL; when it's not NULL, it should have a value for each vertex; 1 denotes vertices that can't be moved
+ * vertex_lock can be NULL; when it's not NULL, it should have a value for each vertex composed of meshopt_SimplifyVertex_* flags
  * target_error represents the error relative to mesh extents that can be tolerated, e.g. 0.01 = 1% deformation; value range [0..1]
  * options must be a bitmask composed of meshopt_SimplifyX options; 0 is a safe default
  * result_error can be NULL; when it's not NULL, it will contain the resulting (relative) error after simplification
@@ -738,6 +742,15 @@ MESHOPTIMIZER_API size_t meshopt_buildMeshletsSpatial(struct meshopt_Meshlet* me
  */
 MESHOPTIMIZER_API void meshopt_optimizeMeshlet(unsigned int* meshlet_vertices, unsigned char* meshlet_triangles, size_t triangle_count, size_t vertex_count);
 
+/**
+ * Experimental: Meshlet optimizer
+ * Reorders meshlet vertices and triangles to maximize locality, with higher levels resulting in smaller compressed size at the cost of optimization time.
+ * At level 0 the result is equivalent to meshopt_optimizeMeshlet; levels >= 1 may rotate triangle corners to improve compression (which can change provoking vertex and affect OMM data).
+ *
+ * level should be in the range [0, 9] with 0 equivalent to meshopt_optimizeMeshlet and 9 being the slowest; the sweet spot for compression ratio is around 3
+ */
+MESHOPTIMIZER_EXPERIMENTAL void meshopt_optimizeMeshletLevel(unsigned int* meshlet_vertices, size_t vertex_count, unsigned char* meshlet_triangles, size_t triangle_count, int level);
+
 struct meshopt_Bounds
 {
 	/* bounding sphere, useful for frustum and occlusion culling */
@@ -886,6 +899,33 @@ MESHOPTIMIZER_EXPERIMENTAL size_t meshopt_opacityMapEntrySize(int level, int sta
 MESHOPTIMIZER_EXPERIMENTAL size_t meshopt_opacityMapCompact(unsigned char* data, size_t data_size, unsigned char* levels, unsigned int* offsets, size_t omm_count, int* omm_indices, size_t triangle_count, int states);
 
 /**
+ * Tangent generation options
+ */
+enum
+{
+	/* Produce tangents compatible with MikkTSpace (same weighting and fallbacks) at the cost of reduced quality. Not recommended unless normal maps are baked. */
+	meshopt_TangentCompatible = 1 << 0,
+	/* Experimental: For vertices only connected to degenerate triangles, output zero tangents instead of an arbitrary fallback.  */
+	meshopt_TangentZeroFallback = 1 << 1,
+};
+
+/**
+ * Experimental: Tangent space generator
+ * Computes per-corner tangent vectors; for each corner, computes normalized tangent vector (xyz) and orientation (w, +/-1).
+ * Bitangent can be reconstructed via cross(normal, tangent.xyz) * tangent.w.
+ * To apply tangents to the mesh, either deindex and reindex it with the tangent stream, or copy tangents to existing vertex data while duplicating
+ * vertices with different tangent vectors (e.g. on UV mirror seams).
+ * Input can be indexed or unindexed (indices=NULL); this does not affect the resulting tangents, but indexed inputs are ~30% faster to process.
+ *
+ * result must contain enough space for the output tangent data (index_count*4 elements)
+ * indices can be NULL if the input is unindexed
+ * vertex_positions should have float3 position in the first 12 bytes of each vertex
+ * vertex_normals should have unit float3 normal in the first 12 bytes of each vertex
+ * vertex_uvs should have float2 texture coordinate in the first 8 bytes of each vertex
+ */
+MESHOPTIMIZER_EXPERIMENTAL void meshopt_generateTangents(float* result, const unsigned int* indices, size_t index_count, const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride, const float* vertex_normals, size_t vertex_normals_stride, const float* vertex_uvs, size_t vertex_uvs_stride, unsigned int options);
+
+/**
  * Quantize a float into half-precision (as defined by IEEE-754 fp16) floating point value
  * Generates +-inf for overflow, preserves NaN, flushes denormals to zero, rounds to nearest
  * Representable magnitude range: [6e-5; 65504]
@@ -1025,6 +1065,8 @@ template <typename T>
 inline size_t meshopt_partitionClusters(unsigned int* destination, const T* cluster_indices, size_t total_index_count, const unsigned int* cluster_index_counts, size_t cluster_count, const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride, size_t target_partition_size);
 template <typename T>
 inline void meshopt_spatialSortTriangles(T* destination, const T* indices, size_t index_count, const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride);
+template <typename T>
+inline void meshopt_generateTangents(float* result, const T* indices, size_t index_count, const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride, const float* vertex_normals, size_t vertex_normals_stride, const float* vertex_uvs, size_t vertex_uvs_stride, unsigned int options = 0);
 #endif
 
 /* Inline implementation */
@@ -1202,7 +1244,7 @@ template <typename T>
 inline void meshopt_remapIndexBuffer(T* destination, const T* indices, size_t index_count, const unsigned int* remap)
 {
 	meshopt_IndexAdapter<T> in(NULL, indices, indices ? index_count : 0);
-	meshopt_IndexAdapter<T> out(destination, 0, index_count);
+	meshopt_IndexAdapter<T> out(destination, NULL, index_count);
 
 	meshopt_remapIndexBuffer(out.data, indices ? in.data : NULL, index_count, remap);
 }
@@ -1250,7 +1292,7 @@ inline size_t meshopt_generateProvokingIndexBuffer(T* destination, unsigned int*
 	meshopt_IndexAdapter<T> out(destination, NULL, index_count);
 
 	size_t bound = vertex_count + (index_count / 3);
-	assert(size_t(T(bound - 1)) == bound - 1); // bound - 1 must fit in T
+	assert(bound == 0 || size_t(T(bound - 1)) == bound - 1); // bound - 1 must fit in T
 	(void)bound;
 
 	return meshopt_generateProvokingIndexBuffer(out.data, reorder, in.data, index_count, vertex_count);
@@ -1422,7 +1464,7 @@ template <typename T>
 inline size_t meshopt_unstripify(T* destination, const T* indices, size_t index_count, T restart_index)
 {
 	meshopt_IndexAdapter<T> in(NULL, indices, index_count);
-	meshopt_IndexAdapter<T> out(destination, NULL, (index_count - 2) * 3);
+	meshopt_IndexAdapter<T> out(destination, NULL, index_count == 0 ? 0 : (index_count - 2) * 3);
 
 	return meshopt_unstripify(out.data, in.data, index_count, unsigned(restart_index));
 }
@@ -1514,6 +1556,14 @@ inline void meshopt_spatialSortTriangles(T* destination, const T* indices, size_
 	meshopt_IndexAdapter<T> out(destination, NULL, index_count);
 
 	meshopt_spatialSortTriangles(out.data, in.data, index_count, vertex_positions, vertex_count, vertex_positions_stride);
+}
+
+template <typename T>
+inline void meshopt_generateTangents(float* result, const T* indices, size_t index_count, const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride, const float* vertex_normals, size_t vertex_normals_stride, const float* vertex_uvs, size_t vertex_uvs_stride, unsigned int options)
+{
+	meshopt_IndexAdapter<T> in(NULL, indices, indices ? index_count : 0);
+
+	meshopt_generateTangents(result, indices ? in.data : NULL, index_count, vertex_positions, vertex_count, vertex_positions_stride, vertex_normals, vertex_normals_stride, vertex_uvs, vertex_uvs_stride, options);
 }
 #endif
 
