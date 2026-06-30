@@ -623,6 +623,31 @@ static void decodeVertexBitGroupSentinels()
 	assert(memcmp(decoded, data, sizeof(data)) == 0);
 }
 
+static void decodeVertexBitGroupSentinelCount()
+{
+	const unsigned char expected[13 * 4] = {
+	    0xff, 0, 0, 0, 0xfe, 0, 0, 0, 0xfd, 0, 0, 0, 0xfd, 0, 0, 0,
+	    0xfd, 0, 0, 0, 0xfc, 0, 0, 0, 0xfb, 0, 0, 0, 0xfb, 0, 0, 0,
+	    0xfa, 0, 0, 0, 0xfa, 0, 0, 0, 0xf9, 0, 0, 0, 0xf9, 0, 0, 0,
+	    0xf8, 0, 0, 0 //
+	};
+
+	// encodes several 2-bit sentinels including lane 12; lane 3 is clear so bit 30 does not alias bit 0 during counting
+	const unsigned char input[] = {
+	    0xa1, 0xa9,
+	    0x01, 0xfc, 0x3c, 0xcc, 0xcc,
+	    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	    0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00 //
+	};
+
+	unsigned char decoded[sizeof(expected)];
+	assert(meshopt_decodeVertexBuffer(decoded, 13, 4, input, sizeof(input)) == 0);
+	assert(memcmp(decoded, expected, sizeof(expected)) == 0);
+}
+
 static void decodeVertexDeltas()
 {
 	unsigned short data[16 * 4];
@@ -1042,6 +1067,59 @@ static void encodeFilterExpZero()
 
 	for (size_t i = 0; i < 4; ++i)
 		assert(decoded[i] == 0);
+}
+
+static void encodeFilterExpZeroShared()
+{
+	const float data[4] = {
+	    0.f,
+	    0.1f,
+	    -0.025f,
+	    -0.f,
+	};
+
+	// shared exponents (vector)
+	const unsigned int expected1[4] = {
+	    0xef000000,
+	    0xef003333,
+	    0xedffcccd,
+	    0xed000000,
+	};
+
+	// shared exponents (component)
+	const unsigned int expected2[4] = {
+	    0xed000000,
+	    0xef003333,
+	    0xedffcccd,
+	    0xef000000,
+	};
+
+	unsigned int encoded1[4];
+	meshopt_encodeFilterExp(encoded1, 2, 8, 15, data, meshopt_EncodeExpSharedVector);
+
+	unsigned int encoded2[4];
+	meshopt_encodeFilterExp(encoded2, 2, 8, 15, data, meshopt_EncodeExpSharedComponent);
+
+	assert(memcmp(encoded1, expected1, sizeof(expected1)) == 0);
+	assert(memcmp(encoded2, expected2, sizeof(expected2)) == 0);
+
+	float decoded1[4];
+	memcpy(decoded1, encoded1, sizeof(decoded1));
+	meshopt_decodeFilterExp(decoded1, 2, 8);
+
+	float decoded2[4];
+	memcpy(decoded2, encoded2, sizeof(decoded2));
+	meshopt_decodeFilterExp(decoded2, 2, 8);
+
+	for (size_t i = 0; i < 4; ++i)
+	{
+		assert(fabsf(decoded1[i] - data[i]) < 1e-5f);
+		assert(fabsf(decoded2[i] - data[i]) < 1e-5f);
+	}
+
+	// zeroes should be preserved exactly
+	assert(decoded1[0] == 0 && decoded1[3] == 0);
+	assert(decoded2[0] == 0 && decoded2[3] == 0);
 }
 
 static void encodeFilterExpAlias()
@@ -2555,6 +2633,44 @@ static void simplifyUpdateLocked(unsigned int options)
 	assert(vb[3][3] == 0.2f);
 }
 
+static void filterTriangles()
+{
+	// v0/v3 match fully; v0/v4 match on prefix only
+	const unsigned int vb[] = {
+	    1, 0, 10,
+	    2, 0, 20,
+	    3, 0, 30,
+	    1, 1, 10,
+	    1, 1, 99 //
+	};
+
+	const unsigned int ib[] = {
+	    0, 1, 2, //
+	    3, 1, 2, // dup of (0,1,2)
+	    4, 1, 2, // dup prefix
+	    2, 1, 0, // opposite winding of (0,1,2)
+	    0, 4, 1  // degen prefix
+	};
+
+	// prefix only: vertex key is first 4 bytes
+	unsigned int sib[15];
+	size_t slen = meshopt_filterIndexBuffer(sib, ib, 15, vb, 5, 4, 12);
+
+	unsigned int expecteds[] = {0, 1, 2, 2, 1, 0};
+	assert(slen == sizeof(expecteds) / sizeof(expecteds[0]));
+	assert(memcmp(sib, expecteds, sizeof(expecteds)) == 0);
+
+	// prefix+suffix: vertex key is first 4 and last 4 bytes
+	const meshopt_Stream streams[] = {{vb + 0, 4, 12}, {vb + 2, 4, 12}};
+
+	unsigned int mib[15];
+	size_t mlen = meshopt_filterIndexBufferMulti(mib, ib, 15, 5, streams, 2);
+	unsigned int expectedm[] = {0, 1, 2, 4, 1, 2, 2, 1, 0, 0, 4, 1};
+
+	assert(mlen == sizeof(expectedm) / sizeof(expectedm[0]));
+	assert(memcmp(mib, expectedm, sizeof(expectedm)) == 0);
+}
+
 static void adjacency()
 {
 	// 0 1/4
@@ -2737,6 +2853,112 @@ static void dequantizeHalf()
 	// nan
 	float nanf = meshopt_dequantizeHalf(0x7e00);
 	assert(nanf != nanf);
+}
+
+static int validatePositionExponent(const float minv[3], const float maxv[3], int min_exponent, int max_bits)
+{
+	int exponent = meshopt_computePositionExponent(minv, maxv, min_exponent, max_bits);
+
+	const int anchor_min = -(1 << 23);
+	const int anchor_max = (1 << 23) - 1;
+	const unsigned int range_max = (1 << max_bits) - 1;
+
+	float scale = ldexpf(1.f, -exponent);
+
+	for (int k = 0; k < 3; ++k)
+	{
+		float lo = minv[k] * scale;
+		float hi = maxv[k] * scale;
+
+		// lo must fit in 24-bit signed under both round-to-nearest tie-break choices
+		int lo_neg = int(ceilf(lo - 0.5f));  // round half toward -inf
+		int lo_pos = int(floorf(lo + 0.5f)); // round half toward +inf
+		assert(anchor_min <= lo_neg);
+		assert(lo_neg <= lo_pos);
+		assert(lo_pos <= anchor_max);
+
+		// hi must fit in 24-bit signed under both round-to-nearest tie-break choices
+		int hi_neg = int(ceilf(hi - 0.5f));  // round half toward -inf
+		int hi_pos = int(floorf(hi + 0.5f)); // round half toward +inf
+		assert(anchor_min <= hi_neg);
+		assert(hi_neg <= hi_pos);
+		assert(hi_pos <= anchor_max);
+
+		// largest hi - smallest lo must fit in max_bits (covers both round-to-nearest tie-break choices)
+		assert(unsigned(hi_pos - lo_neg) <= range_max);
+	}
+
+	return exponent;
+}
+
+static void computePositionExponent()
+{
+	const float minv[3] = {-1.f, 2.f, 10.f};
+	const float maxv[3] = {1.f, 2.5f, 20.f};
+
+	assert(validatePositionExponent(minv, maxv, -16, 16) == -12);
+	assert(validatePositionExponent(minv, maxv, -10, 16) == -10);
+
+	const float minirr[3] = {-3.14159265f, -2.7182818f, -1.41321356f};
+	const float maxirr[3] = {3.14159265f, 2.7182818f, 1.41321356f};
+
+	assert(validatePositionExponent(minirr, maxirr, -16, 16) == -13);
+
+	const float point[3] = {1000000.f, 0.f, 0.f};
+	assert(validatePositionExponent(point, point, -16, 16) == -3);
+
+	const float negpoint[3] = {-1000000.f, 0.f, 0.f};
+	assert(validatePositionExponent(negpoint, negpoint, -16, 16) == -3);
+
+	const float asym_min[3] = {0.f, -1000.f, 0.f};
+	const float asym_max[3] = {1e-3f, 1000.f, 1.f};
+	assert(validatePositionExponent(asym_min, asym_max, -16, 16) == -5);
+
+	const float zero[3] = {0.f, 0.f, 0.f};
+	assert(validatePositionExponent(zero, zero, -16, 16) == -16);
+
+	const float range_min[3] = {0.f, 0.f, 0.f};
+	const float range_max[3] = {65535.f, 0.f, 0.f};
+	assert(validatePositionExponent(range_min, range_max, 0, 16) == 0);
+
+	const float range_over[3] = {65536.f, 0.f, 0.f};
+	assert(validatePositionExponent(range_min, range_over, 0, 16) == 1);
+
+	const float range_dgf_min[3] = {0.4f, 0.f, 0.f};
+	const float range_dgf_max[3] = {65535.5625f, 0.f, 0.f};
+	assert(validatePositionExponent(range_dgf_min, range_dgf_max, 0, 16) == 1);
+
+	const float range_half_min[3] = {-1.f, 0.f, 0.f};
+	const float range_half_max[3] = {131069.f, 0.f, 0.f};
+	assert(validatePositionExponent(range_half_min, range_half_max, 0, 16) == 2);
+
+	const float anchor_max[3] = {8388607.f, 0.f, 0.f};
+	assert(validatePositionExponent(anchor_max, anchor_max, 0, 16) == 0);
+
+	const float anchor_over[3] = {8388608.f, 0.f, 0.f};
+	assert(validatePositionExponent(anchor_over, anchor_over, 0, 16) == 1);
+
+	const float anchor_min[3] = {-8388608.f, 0.f, 0.f};
+	assert(validatePositionExponent(anchor_min, anchor_min, 0, 16) == 1); // note: symmetric range; 0 would be acceptable
+
+	const float posunit[3] = {1.f, 0.f, 0.f};
+	assert(validatePositionExponent(posunit, posunit, -23, 16) == -22);
+
+	const float negunit[3] = {-1.f, 0.f, 0.f};
+	assert(validatePositionExponent(negunit, negunit, -23, 16) == -22); // note: symmetric range; -23 would be acceptable
+
+	const float ties[3] = {0.5f, -0.5f, 2.5f};
+	assert(validatePositionExponent(ties, ties, 0, 16) == 0);
+
+	const float tie_min[3] = {-0.5f, 0.f, 0.f};
+	const float tie_max[3] = {0.5f, 0.f, 0.f};
+	assert(validatePositionExponent(tie_min, tie_max, 0, 16) == 0);
+
+	const float bits21_max[3] = {2097151.f, 0.f, 0.f};
+	assert(validatePositionExponent(range_min, bits21_max, 0, 21) == 0);
+
+	const float anchor_half[3] = {8388607.5f, 0.f, 0.f};
+	assert(validatePositionExponent(anchor_half, anchor_half, 0, 16) == 1);
 }
 
 static void encodeMeshletBound()
@@ -3120,6 +3342,47 @@ static void opacityMapSpecial()
 	}
 }
 
+static void tangentsBasic()
+{
+	struct Vertex
+	{
+		float px, py, pz;
+		float nx, ny, nz;
+		float tx, ty;
+	};
+
+	// unindexed quad with matching corner data for shared diagonal
+	const Vertex vertices[] = {
+	    {0, 0, 0, -0.28f, 0, 0.96f, 0, 0}, // diag 1
+	    {1, 0, 0, 0.28f, 0, 0.96f, 1, 0},
+	    {1, 1, 0, 0.28f, 0, 0.96f, 1, 1},  // diag 2
+	    {0, 0, 0, -0.28f, 0, 0.96f, 0, 0}, // diag 1
+	    {1, 1, 0, 0.28f, 0, 0.96f, 1, 1},  // diag 2
+	    {0, 1, 0, -0.28f, 0, 0.96f, 0, 1},
+	};
+
+	// unindexed input: indices == NULL, vertex_count == index_count
+	float tangents[6 * 4];
+	meshopt_generateTangents(tangents, NULL, 6, &vertices[0].px, 6, sizeof(Vertex), &vertices[0].nx, sizeof(Vertex), &vertices[0].tx, sizeof(Vertex), 0);
+
+	// (1, 0, 0) reprojected onto tilted normals
+	const float left[4] = {0.96f, 0.f, 0.28f, 1.f};
+	const float right[4] = {0.96f, 0.f, -0.28f, 1.f};
+
+	const float* expected[6] = {left, right, right, left, right, left};
+
+	for (size_t i = 0; i < 6; ++i)
+		for (size_t k = 0; k < 4; ++k)
+			assert(fabsf(tangents[i * 4 + k] - expected[i][k]) < 1e-3f);
+
+	// shared vertices get the same tangent vector
+	for (int k = 0; k < 4; ++k)
+	{
+		assert(tangents[0 * 4 + k] == tangents[3 * 4 + k]); // diag 1
+		assert(tangents[2 * 4 + k] == tangents[4 * 4 + k]); // diag 2
+	}
+}
+
 static void tangentDegenerate()
 {
 	struct Vertex
@@ -3219,6 +3482,7 @@ void runTests()
 		decodeVertexRejectMalformedHeaders();
 		decodeVertexBitGroups();
 		decodeVertexBitGroupSentinels();
+		decodeVertexBitGroupSentinelCount();
 		decodeVertexDeltas();
 		decodeVertexBitXor();
 		decodeVertexLarge();
@@ -3239,6 +3503,7 @@ void runTests()
 	encodeFilterQuat12();
 	encodeFilterExp();
 	encodeFilterExpZero();
+	encodeFilterExpZeroShared();
 	encodeFilterExpAlias();
 	encodeFilterExpClamp();
 	encodeFilterColor8();
@@ -3293,6 +3558,7 @@ void runTests()
 	simplifyUpdateLocked(0);
 	simplifyUpdateLocked(meshopt_SimplifySparse);
 
+	filterTriangles();
 	adjacency();
 	tessellation();
 	provoking();
@@ -3300,6 +3566,7 @@ void runTests()
 	quantizeFloat();
 	quantizeHalf();
 	dequantizeHalf();
+	computePositionExponent();
 
 	encodeMeshletBound();
 	decodeMeshletSafety();
@@ -3310,5 +3577,6 @@ void runTests()
 	opacityMapRasterize0();
 	opacityMapSpecial();
 
+	tangentsBasic();
 	tangentDegenerate();
 }

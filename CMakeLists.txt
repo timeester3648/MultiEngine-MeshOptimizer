@@ -12,7 +12,7 @@ if(POLICY CMP0092)
     cmake_policy(SET CMP0092 NEW) # Enables clean /W4 override for MSVC
 endif()
 
-project(meshoptimizer VERSION 1.1 LANGUAGES CXX)
+project(meshoptimizer VERSION 1.2 LANGUAGES CXX)
 
 option(MESHOPT_BUILD_DEMO "Build demo" OFF)
 option(MESHOPT_BUILD_GLTFPACK "Build gltfpack" OFF)
@@ -127,6 +127,10 @@ if(MESHOPT_BUILD_GLTFPACK)
     add_executable(gltfpack ${GLTF_SOURCES})
     set_target_properties(gltfpack PROPERTIES CXX_STANDARD 11)
     target_link_libraries(gltfpack meshoptimizer)
+
+    if(MESHOPT_BUILD_SHARED_LIBS AND MESHOPT_STABLE_EXPORTS)
+        target_compile_definitions(gltfpack PRIVATE GLTFPACK_NO_EXPERIMENTAL)
+    endif()
 
     if(MESHOPT_BUILD_SHARED_LIBS)
         string(CONCAT RPATH "$ORIGIN/../" ${CMAKE_INSTALL_LIBDIR})
